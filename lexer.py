@@ -34,9 +34,10 @@ class Token:
 
     def __repr__(self):
         text = "\\n" if self.text == "\n" else self.text
+        pos = f"{self.line}:{self.col}"
         if self.sub:
-            return f"({text}, {self.kind}, {self.sub})"
-        return f"({text}, {self.kind})"
+            return f"({text}, {self.kind}, {self.sub}, {pos})"
+        return f"({text}, {self.kind}, {pos})"
 
 
 def is_ident_start(b):

@@ -1,0 +1,34 @@
+Practice 3 grammar (EBNF) for the Practice 2 language, widened by Task 4
+to full +, -, * expressions with precedence and left associativity.
+
+Notation: | alternatives, [ x ] optional, { x } zero or more,
+"quoted" terminals are token kinds the lexer emits verbatim,
+unquoted names are non-terminals with a rule below.
+
+program    ::= { statement } exit_stmt
+statement  ::= decl | assign
+decl       ::= "i32" [ "mut" ] ident "{" expr "}"
+assign     ::= ident ":=" expr
+exit_stmt  ::= "exit" factor
+expr       ::= term { ( "+" | "-" ) term }
+term       ::= factor { "*" factor }
+factor     ::= number | ident
+
+Terminals ident and number come from the lexer as "identifier" and
+"constant" tokens; how they are spelled is the lexer's rule, not the
+grammar's. "i32", "mut", "exit", "{", "}", ":=", "+", "-", "*" are the
+lexer's "typename"/"specifier"/"statement" keywords, block start/end and
+operator tokens, used here with the text they carry.
+
+One statement per line; blank lines carry no tokens and are skipped
+before this grammar ever sees them (a lexer concern, per Practice 2).
+exit_stmt is the last line, and there is exactly one — program requires
+{ statement } to end with exactly one exit_stmt, not zero, not more,
+and nothing after it; the parser enforces this since EBNF has no way to
+say "last line".
+
+Semantics the grammar cannot express — a name declared once, before its
+first use, and only a mut variable assigned — are not covered by any
+rule above; they are checked during the AST walk in gen.py instead. That
+* binds tighter than + and - is not semantics: it falls out of the shape
+of expr/term/factor and needs no rule of its own.
