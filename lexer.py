@@ -19,8 +19,12 @@ class CompileError(Exception):
 # category, subkind for each reserved word
 KEYWORDS = {
     "i32": ("keyword", "typename"),
+    "i64": ("keyword", "typename"),
+    "bool": ("keyword", "typename"),
     "mut": ("keyword", "specifier"),
     "exit": ("keyword", "statement"),
+    "true": ("keyword", "boolean"),
+    "false": ("keyword", "boolean"),
 }
 
 SINGLE_BYTE_OPS = {ord("+"): "+", ord("-"): "-", ord("*"): "*"}
@@ -99,7 +103,9 @@ def lex(data: bytes):
             elif b == ord(":"):
                 state, start_i, start_line, start_col = "COLON", i, line, col
             elif b == ord("="):
-                raise CompileError(line, col, "unexpected byte '='")
+                state, start_i, start_line, start_col = "EQ", i, line, col
+            elif b == ord("!"):
+                state, start_i, start_line, start_col = "BANG", i, line, col
             else:
                 ch = chr(b) if b < 128 else f"\\x{b:02x}"
                 raise CompileError(line, col, f"unexpected byte '{ch}'")
@@ -133,6 +139,22 @@ def lex(data: bytes):
                 state = "START"
             else:
                 raise CompileError(start_line, start_col, "':' is not followed by '='")
+
+        elif state == "EQ":
+            if b == ord("="):
+                tokens.append(Token("operator", None, "==", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(start_line, start_col,
+                                    "expected '==' (a single '=' is not an operator)")
+
+        elif state == "BANG":
+            if b == ord("="):
+                tokens.append(Token("operator", None, "!=", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(start_line, start_col,
+                                    "expected '!=' (a single '!' is not an operator)")
 
         i += 1
         col += 1

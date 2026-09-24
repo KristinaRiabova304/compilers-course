@@ -1,9 +1,10 @@
-"""Runs every program in tests/ through compiler.py and checks its output.
+"""Runs every program in tests/ok and tests/err through compiler.py and
+checks its output.
 
-valid_*.txt   must compile and, run through `lli`, print the matching
-              valid_*.expected on stdout.
-invalid_*.txt must fail to compile with the exact stderr line in the
-              matching invalid_*.expected.
+tests/ok/*.txt  must compile and, run through `lli`, print the matching
+                *.expected on stdout.
+tests/err/*.txt must fail to compile with the exact stderr line in the
+                matching *.expected.
 """
 import pathlib
 import subprocess
@@ -17,7 +18,7 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def check_valid(src: pathlib.Path, expected: str) -> str | None:
+def check_ok(src: pathlib.Path, expected: str) -> str | None:
     ll_path = src.with_suffix(".ll")
     compiled = run([sys.executable, str(ROOT / "compiler.py"), str(src), str(ll_path)])
     if compiled.returncode != 0:
@@ -31,7 +32,7 @@ def check_valid(src: pathlib.Path, expected: str) -> str | None:
     return None
 
 
-def check_invalid(src: pathlib.Path, expected: str) -> str | None:
+def check_err(src: pathlib.Path, expected: str) -> str | None:
     ll_path = src.with_suffix(".ll")
     compiled = run([sys.executable, str(ROOT / "compiler.py"), str(src), str(ll_path)])
     ll_path.unlink(missing_ok=True)
@@ -45,23 +46,20 @@ def check_invalid(src: pathlib.Path, expected: str) -> str | None:
 def main():
     failures = 0
     total = 0
-    for src in sorted(TESTS_DIR.glob("*.txt")):
-        expected_path = src.with_suffix(".expected")
-        if not expected_path.exists():
-            continue
-        total += 1
-        expected = expected_path.read_text()
-        if src.name.startswith("valid_"):
-            error = check_valid(src, expected)
-        elif src.name.startswith("invalid_"):
-            error = check_invalid(src, expected)
-        else:
-            continue
-        if error:
-            failures += 1
-            print(f"FAIL {src.name}: {error}")
-        else:
-            print(f"PASS {src.name}")
+    for subdir, checker in (("ok", check_ok), ("err", check_err)):
+        for src in sorted((TESTS_DIR / subdir).glob("*.txt")):
+            expected_path = src.with_suffix(".expected")
+            if not expected_path.exists():
+                continue
+            total += 1
+            expected = expected_path.read_text()
+            error = checker(src, expected)
+            name = f"{subdir}/{src.name}"
+            if error:
+                failures += 1
+                print(f"FAIL {name}: {error}")
+            else:
+                print(f"PASS {name}")
 
     print(f"\n{total - failures}/{total} passed")
     sys.exit(1 if failures else 0)

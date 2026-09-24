@@ -1,4 +1,4 @@
-from ast_nodes import AssignNode, BinOpNode, ConstNode, DeclNode, ExitNode, ProgramNode, VarNode
+from ast_nodes import AssignNode, BinOpNode, BoolNode, ConstNode, DeclNode, ExitNode, ProgramNode, VarNode
 from lexer import CompileError
 
 
@@ -54,7 +54,9 @@ class Parser:
         return ProgramNode(1, 1, stmts, exit_node)
 
     def parse_decl(self):
-        self.eat()
+        type_tok = self.eat()
+        type_name = type_tok.text
+
         mutable = False
         tok = self.peek()
         if tok is not None and tok.kind == "keyword" and tok.sub == "specifier":
@@ -83,7 +85,7 @@ class Parser:
             raise self.error("expected '}' to close the initialiser", close)
         self.eat()
 
-        return DeclNode(name_tok.line, name_tok.col, name_tok.text, mutable, init)
+        return DeclNode(name_tok.line, name_tok.col, type_name, name_tok.text, mutable, init)
 
     def parse_assign(self):
         name_tok = self.eat()
@@ -103,6 +105,14 @@ class Parser:
         return ExitNode(exit_tok.line, exit_tok.col, value)
 
     def parse_expr(self):
+        node = self.parse_arith()
+        tok = self.peek()
+        if tok is not None and tok.kind == "operator" and tok.text in ("==", "!="):
+            self.eat()
+            node = BinOpNode(tok.line, tok.col, tok.text, node, self.parse_arith())
+        return node
+
+    def parse_arith(self):
         node = self.parse_term()
         while True:
             tok = self.peek()
@@ -125,11 +135,14 @@ class Parser:
     def parse_factor(self):
         tok = self.peek()
         if tok is None:
-            raise self.error("expected a constant or a variable, found end of line")
+            raise self.error("expected a constant, 'true'/'false' or a variable, found end of line")
         if tok.kind == "constant":
             self.eat()
             return ConstNode(tok.line, tok.col, int(tok.text))
+        if tok.kind == "keyword" and tok.sub == "boolean":
+            self.eat()
+            return BoolNode(tok.line, tok.col, tok.text == "true")
         if tok.kind == "identifier":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
-        raise self.error(f"expected a constant or a variable, got '{tok.text}'", tok)
+        raise self.error(f"expected a constant, 'true'/'false' or a variable, got '{tok.text}'", tok)

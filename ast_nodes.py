@@ -23,15 +23,16 @@ class StmtNode(Node):
 
 
 class DeclNode(StmtNode):
-    def __init__(self, line, col, name, mutable, init):
+    def __init__(self, line, col, type_name, name, mutable, init):
         super().__init__(line, col)
-        self.name, self.mutable, self.init = name, mutable, init
+        self.type_name, self.name, self.mutable, self.init = type_name, name, mutable, init
 
     def accept(self, visitor):
         return visitor.visit_decl(self)
 
     def dump(self, indent=0):
-        print("  " * indent + f"Decl {self.name} {'mut' if self.mutable else 'const'}")
+        print("  " * indent
+              + f"Decl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}")
         self.init.dump(indent + 1)
 
 
@@ -101,3 +102,15 @@ class ConstNode(ExprNode):
 
     def dump(self, indent=0):
         print("  " * indent + f"Const {self.value}")
+
+
+class BoolNode(ExprNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def accept(self, visitor):
+        return visitor.visit_bool(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + f"Bool {'true' if self.value else 'false'}")
