@@ -23,6 +23,14 @@ def check_ok(src: pathlib.Path, expected: str) -> str | None:
     compiled = run([sys.executable, str(ROOT / "compiler.py"), str(src), str(ll_path)])
     if compiled.returncode != 0:
         return f"compilation failed: {compiled.stderr.strip()}"
+
+    ast_path = src.with_suffix(".ast")
+    if ast_path.exists():
+        dumped = run([sys.executable, str(ROOT / "compiler.py"), "--ast", str(src)])
+        want_ast = ast_path.read_text().strip()
+        if dumped.stdout.strip() != want_ast:
+            return f"--ast: expected {want_ast!r}, got {dumped.stdout.strip()!r}"
+
     ran = run(["lli", str(ll_path)])
     ll_path.unlink(missing_ok=True)
     if ran.returncode != 0:

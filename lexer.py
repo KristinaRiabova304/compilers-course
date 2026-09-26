@@ -107,7 +107,7 @@ def lex(data: bytes):
             elif b == ord("!"):
                 state, start_i, start_line, start_col = "BANG", i, line, col
             else:
-                ch = chr(b) if b < 128 else f"\\x{b:02x}"
+                ch = chr(b) if 32 <= b < 127 else f"\\x{b:02x}"
                 raise CompileError(line, col, f"unexpected byte '{ch}'")
 
         elif state == "IDENT":
