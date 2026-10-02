@@ -1,0 +1,96 @@
+AI USAGE LOG Practice 4: types, comparisons and a semantic pass
+Languages and Compilers Design
+
+Інструмент: Claude Code (Anthropic), модель Claude Sonnet 5.
+
+Як використовувався AI:
+- Отримав завдання у вигляді PDF-файлу практики (w04-practice.pdf) поверх
+  наявних lexer.py/parser.py/ast_nodes.py/gen.py/compiler.py з Practice 3.
+- Розширив lexer.py (Task 1): додав ключові слова i64, bool, true, false
+  до KEYWORDS; додав стани EQ і BANG для дворядкових операторів == і !=
+  (за зразком уже наявного стану COLON для :=); поодинокі '=' і '!' тепер
+  дають лексичну помилку "expected '==' ..."/"expected '!=' ..." замість
+  негайного "unexpected byte", з точним line:column байта.
+- Розширив ast_nodes.py: DeclNode тепер зберігає type_name; додав
+  BoolNode (літерал true/false) з власним dump(); формат Decl у dump()
+  став "Decl <name> <type> <mut|const>" за прикладом з методички.
+- Переписав parser.py під нову граматику: decl зчитує тип перед іменем;
+  колишній parse_expr (ланцюжок +/-) перейменовано на parse_arith; новий
+  parse_expr = arith [("=="|"!=") arith] — один порівняльний оператор,
+  що зв'язує слабше за арифметику; parse_factor приймає number|true|
+  false|ident.
+- Написав новий файл checker.py (Task 2) — клас SemanticChecker, окремий
+  обхід дерева до створення builder'а. Володіє таблицею символів
+  (ім'я -> DeclNode), для кожного виразу обчислює node.type і зберігає
+  його на вузлі, для кожного Var/Assign записує node.decl. Реалізував
+  усі правила типів з методички: + - * тільки для двох цілих (результат
+  — ширший тип), == != для двох цілих будь-якої ширини або двох bool,
+  i32 -> i64 єдине неявне розширення, константа отримує найвужчий тип,
+  що вміщає (i32, інакше i64, інакше помилка), і три старі перевірки
+  (оголошено раз, оголошено до використання, mut перед :=), перенесені
+  з gen.py без зміни тексту повідомлень і позицій. Окремо обробив
+  випадок константи, що не влазить у цільовий тип (наприклад,
+  "line 1:7: constant 3000000000 does not fit in i32" — позиція на
+  константі, а не на імені) за допомогою isinstance-перевірки в
+  check_assignable, як натякає "at the constant" в списку помилок PDF.
+- Переписав gen.py (Task 3) під перевірене дерево: типізовані alloca
+  (i32/i64/i1 за node.type_name), один coerce()-хелпер, що робить sext
+  i32->i64 у п'яти місцях, куди checker.py дозволив розширення
+  (ініціалізатор, присвоєння, обидва операнди +-*, обидва операнди ==
+  != після вирівнювання ширини, значення exit); == != стали icmp_signed
+  з попереднім вирівнюванням ширини; exit цілого числа розширює його до
+  i64 і друкує через printf з %lld, exit bool обирає між рядками "true"
+  і "false" через builder.select() і друкує через %s. Жодних перевірок
+  у CodeGen більше немає — код довіряє node.type/node.decl.
+- Оновив compiler.py: додав виклик SemanticChecker().check(program) на
+  початку compile_program (до створення IR-модуля), додав два формати
+  printf (fmt_int, fmt_bool) і дві рядкові константи (str_true,
+  str_false) як глобальні змінні модуля.
+- Оновив grammar.ebnf під нову граматику (type, expr/arith/term/factor,
+  == != як окремий рівень над +-*).
+- Реструктуризував tests/: перемістив старі valid_*/invalid_* файли
+  (Practice 2/3) у tests/ok/ і tests/err/ відповідно до вимоги завдання
+  "tests/ok and tests/err"; виправив у трьох старих .expected файлах
+  формулювання повідомлення parse_factor (тепер згадує 'true'/'false');
+  перегенерував .ast-знімки для 5 файлів, що мали їх, читаючи новий
+  формат Decl (додано поле типу). Додав 6 нових ok-тестів
+  (i64_widen_init, i64_widen_plus, i64_const_literal, compare_diff_width,
+  bool_compare, bool_exit) і 8 нових err-тестів (bool_in_arithmetic,
+  narrowing_i64_to_i32, narrowing_bool_to_int, narrowing_int_to_bool,
+  const_overflow_i64, bool_compare_int, bare_equals, bare_bang), кожен
+  з .expected, отриманим реальним запуском компілятора/lli, а не
+  написаним вручну. Оновив tests/run_tests.py: замість сканування
+  tests/*.txt за префіксом valid_/invalid_ тепер сканує tests/ok/*.txt
+  і tests/err/*.txt окремо.
+- Оновив README.md під нову структуру файлів (checker.py, tests/ok,
+  tests/err) і опис мови (типи, порівняння, правила розширення).
+
+Перевірка результатів (виконано вручну студентом):
+- --ast для робочого прикладу Task 1 з методички (i64 a, bool b/c/d/e,
+  i32 x, i64 y/z, вираз y := y*z+a) звірено вручну з очікуваною формою
+  дерева — збігається.
+- Той самий приклад прогнано через lli: "Program exit with result 385"
+  — збігається з очікуванням у PDF. exit e (bool, true) дає
+  "Program exit with result true".
+- Дві лексичні помилки з попередження Task 1: "a = 1" дає
+  "line 2:3: expected '==' (a single '=' is not an operator)", "!b" дає
+  "line 2:1: expected '!=' (a single '!' is not an operator)".
+- П'ять програм-помилок Task 2 (по одному правилу: bool у +, bool у
+  порівнянні з i32, i32{a+b} де a+b має тип i64, присвоєння i64 в i32
+  mut-змінну, константа 3000000000 в i32) перевірено вручну — кожна
+  дає рядок з методички дослівно, включно з "line 1:7: constant
+  3000000000 does not fit in i32" і "line 2:5: cannot initialise 'c' of
+  type i32 with a value of type i64". Ті самі п'ять програм із
+  виправленим рядком перевірено — компілюються й дають очікуваний
+  результат через lli.
+- sext видно в output.ll на кожному з п'яти місць (ініціалізатор,
+  присвоєння, операнди +-*, операнди ==!=, значення exit) — перевірено
+  вручну по тексту IR для робочого прикладу.
+- Усі програми Practice 2/3 (11 valid + 11 invalid, тепер у tests/ok і
+  tests/err) перепрогнано через новий компілятор до реструктуризації —
+  жодних регресій, окрім очікуваної зміни формулювання в трьох invalid-
+  тестах (parse_factor тепер згадує true/false).
+- tests/run_tests.py: 36/36 passed (17 ok, 19 err) після реструктуризації
+  і додавання нових тестів Practice 4.
+
+

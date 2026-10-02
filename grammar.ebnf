@@ -1,0 +1,43 @@
+Practice 4 grammar (EBNF): three types (i32, i64, bool), comparisons
+(==, !=) and a semantic pass on top of the Practice 3 language.
+
+Notation: | alternatives, [ x ] optional, { x } zero or more,
+"quoted" terminals are token kinds the lexer emits verbatim,
+unquoted names are non-terminals with a rule below.
+
+program    ::= { statement } exit_stmt
+statement  ::= decl | assign
+decl       ::= type [ "mut" ] ident "{" expr "}"
+type       ::= "i32" | "i64" | "bool"
+assign     ::= ident ":=" expr
+exit_stmt  ::= "exit" factor
+expr       ::= arith [ ( "==" | "!=" ) arith ]
+arith      ::= term { ( "+" | "-" ) term }
+term       ::= factor { "*" factor }
+factor     ::= number | "true" | "false" | ident
+
+Terminals ident and number come from the lexer as "identifier" and
+"constant" tokens; how they are spelled is the lexer's rule, not the
+grammar's. "i32", "i64", "bool", "mut", "exit", "true", "false" are the
+lexer's "typename"/"specifier"/"statement"/"boolean" keywords, block
+start/end, "==" / "!=" and ":=" are two-byte operator tokens, "+" "-" "*"
+single-byte operator tokens, used here with the text they carry.
+
+One statement per line; blank lines carry no tokens and are skipped
+before this grammar ever sees them. exit_stmt is the last line, and
+there is exactly one; the parser enforces this since EBNF has no way to
+say "last line". exit takes only a factor (a constant, a boolean
+literal or a variable), never an operation.
+
+Semantics the grammar cannot express live in checker.py, not here:
+- a name declared once, before its first use, and only a mut variable
+  assigned (moved out of code generation in Practice 3, into the
+  semantic pass in Practice 4);
+- the type of every expression: + - * take two integers and widen to
+  the wider type; == != take two integers (any mix) or two bools and
+  produce a bool; an i32 value may widen into an i64, nothing else
+  converts; a decimal constant gets the narrowest type it fits.
+That * binds tighter than + and - is not semantics: it falls out of the
+shape of arith/term/factor and needs no rule of its own. That == / !=
+bind weaker than arithmetic and allow only one comparison per
+expression is the shape of expr/arith, likewise no rule of its own.

@@ -1,0 +1,4 @@
+i32 a{10}
+bool b{true}
+bool c{a == b}
+exit c
