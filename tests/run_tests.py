@@ -42,10 +42,14 @@ def check_ok(src: pathlib.Path, expected: str) -> str | None:
 
 def check_err(src: pathlib.Path, expected: str) -> str | None:
     ll_path = src.with_suffix(".ll")
+    ll_path.unlink(missing_ok=True)
     compiled = run([sys.executable, str(ROOT / "compiler.py"), str(src), str(ll_path)])
+    wrote_ll = ll_path.exists()
     ll_path.unlink(missing_ok=True)
     if compiled.returncode == 0:
         return "expected compilation to fail, but it succeeded"
+    if wrote_ll:
+        return "compilation failed but still wrote the .ll file"
     if compiled.stderr.strip() != expected.strip():
         return f"expected {expected.strip()!r}, got {compiled.stderr.strip()!r}"
     return None

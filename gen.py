@@ -16,7 +16,7 @@ class CodeGen:
         self.str_true, self.str_false = str_true, str_false
         self.i32, self.i64, self.i1 = i32, i64, i1
         self.ir_types = {"i32": i32, "i64": i64, "bool": i1}
-        self.ptrs = {}  # name -> alloca ptr
+        self.ptrs = {}  # DeclNode -> alloca ptr
 
     def ir_type(self, type_name):
         return self.ir_types[type_name]
@@ -36,12 +36,12 @@ class CodeGen:
         value = self.coerce(value, node.init.type, node.type_name)
         ptr = self.builder.alloca(self.ir_type(node.type_name), name=node.name)
         self.builder.store(value, ptr)
-        self.ptrs[node.name] = ptr
+        self.ptrs[node] = ptr
 
     def visit_assign(self, node):
         value = node.value.accept(self)
         value = self.coerce(value, node.value.type, node.decl.type_name)
-        self.builder.store(value, self.ptrs[node.name])
+        self.builder.store(value, self.ptrs[node.decl])
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -72,7 +72,7 @@ class CodeGen:
         return self.builder.icmp_signed(predicate, lv, rv)
 
     def visit_var(self, node):
-        return self.builder.load(self.ptrs[node.name])
+        return self.builder.load(self.ptrs[node.decl])
 
     def visit_const(self, node):
         return ir.Constant(self.ir_type(node.type), node.value)
