@@ -1,0 +1,52 @@
+Practice 5 grammar (EBNF): if/else, while, blocks, ! on top of the
+Practice 4 language (three types, comparisons, a semantic pass).
+
+Notation: | alternatives, [ x ] optional, { x } zero or more,
+"quoted" terminals are token kinds the lexer emits verbatim,
+unquoted names are non-terminals with a rule below.
+
+program    ::= { statement } exit_stmt
+statement  ::= decl | assign | if | while
+decl       ::= type [ "mut" ] ident "{" expr "}"
+type       ::= "i32" | "i64" | "bool"
+assign     ::= ident ":=" expr
+if         ::= "if" expr NL block [ "else" NL block ]
+while      ::= "while" expr NL block
+block      ::= "{" NL { statement } [ exit_stmt NL ] "}" NL   (not empty)
+exit_stmt  ::= "exit" factor
+expr       ::= arith [ ( "==" | "!=" ) arith ]
+arith      ::= term { ( "+" | "-" ) term }
+term       ::= factor { "*" factor }
+factor     ::= number | "true" | "false" | ident | "!" factor
+
+Terminals ident and number come from the lexer as "identifier" and
+"constant" tokens; how they are spelled is the lexer's rule, not the
+grammar's. "i32", "i64", "bool", "mut", "exit", "true", "false", "if",
+"else", "while" are the lexer's keywords, "{"/"}" block tokens, "==" /
+"!=" / "!" / ":=" operator tokens, "+" "-" "*" single-byte operator
+tokens, used here with the text they carry. NL is the end of a line:
+one statement is one line, except if/while/block, which are several -
+the parser keeps a line cursor next to its token cursor for exactly
+this reason.
+
+One statement per line inside a block the same way as at the top
+level; blank lines carry no tokens and are skipped before this grammar
+ever sees them. exit_stmt is the last line of whatever block it is in,
+and there is at most one per block (exactly one for the program); it
+takes only a factor (a constant, a boolean literal, a variable or a
+'!'-chain), never a +/-/* or a comparison.
+
+Semantics the grammar cannot express live in checker.py, not here:
+- a stack of scope frames, one per block: a name is declared once per
+  frame (shadowing an outer frame is fine, with any type), resolved by
+  walking frames from the innermost out, and only a mut variable is
+  assigned (Practice 3/4, now per-frame instead of one flat table);
+- the type of every expression: + - * take two integers and widen to
+  the wider type; == != take two integers (any mix) or two bools and
+  produce a bool; ! takes a bool and produces a bool; the condition of
+  if/while must be bool; an i32 value may widen into an i64, nothing
+  else converts; a decimal constant gets the narrowest type it fits.
+That * binds tighter than + and - is not semantics: it falls out of
+the shape of arith/term/factor and needs no rule of its own. That ! is
+the only prefix operator and binds to the single factor right after it
+is likewise the shape of factor, not a semantic rule.
