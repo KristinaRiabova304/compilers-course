@@ -4,6 +4,13 @@ The SemanticChecker has already run: every expression node carries
 node.type, every VarNode/AssignNode carries node.decl. This walk looks
 nothing up and raises nothing - it only builds llvmlite.ir instructions,
 widening with sext at exactly the five places the checker allowed it.
+
+A Block is a builder position, not a scope: ptrs is keyed by DeclNode
+object identity, so two shadowing declarations get two slots without the
+generator ever comparing names. An If/While is basic blocks and a
+cbranch; every alloca still goes to the function's entry block (via
+builder.goto_entry_block()) regardless of which block is current when the
+declaration is met, so mem2reg can promote it later.
 """
 from llvmlite import ir
 
@@ -31,10 +38,57 @@ class CodeGen:
             stmt.accept(self)
         node.exit.accept(self)
 
+    def visit_block(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+
+    def visit_if(self, node):
+        cond = node.condition.accept(self)
+        function = self.builder.function
+        then_bb = function.append_basic_block("then")
+        else_bb = function.append_basic_block("else") if node.else_block else None
+        merge_bb = function.append_basic_block("merge")
+        self.builder.cbranch(cond, then_bb, else_bb or merge_bb)  # ends the current block
+
+        self.builder.position_at_end(then_bb)
+        node.then_block.accept(self)
+        if not self.builder.block.is_terminated:  # an arm that exited has its ret
+            self.builder.branch(merge_bb)
+
+        if node.else_block:
+            self.builder.position_at_end(else_bb)
+            node.else_block.accept(self)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)  # what follows the if goes here
+
+    def visit_while(self, node):
+        function = self.builder.function
+        cond_bb = function.append_basic_block("while_cond")
+        body_bb = function.append_basic_block("while_body")
+        end_bb = function.append_basic_block("while_end")
+
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(cond_bb)
+        cond = node.condition.accept(self)
+        self.builder.cbranch(cond, body_bb, end_bb)
+
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(cond_bb)  # the back edge
+
+        self.builder.position_at_end(end_bb)
+
     def visit_decl(self, node):
         value = node.init.accept(self)
         value = self.coerce(value, node.init.type, node.type_name)
-        ptr = self.builder.alloca(self.ir_type(node.type_name), name=node.name)
+        with self.builder.goto_entry_block():
+            ptr = self.builder.alloca(self.ir_type(node.type_name), name=node.name)
         self.builder.store(value, ptr)
         self.ptrs[node] = ptr
 
@@ -70,6 +124,9 @@ class CodeGen:
             lv, rv = self.coerce(lv, lt, width), self.coerce(rv, rt, width)
         predicate = "==" if node.op == "==" else "!="
         return self.builder.icmp_signed(predicate, lv, rv)
+
+    def visit_not(self, node):
+        return self.builder.not_(node.operand.accept(self), name="not")
 
     def visit_var(self, node):
         return self.builder.load(self.ptrs[node.decl])

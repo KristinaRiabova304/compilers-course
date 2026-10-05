@@ -18,7 +18,7 @@ def parse(data: bytes):
 def compile_program(program):
     SemanticChecker().check(program)
 
-    module = ir.Module(name="practice4")
+    module = ir.Module(name="practice5")
     module.triple = llvm.get_default_triple()
     i32, i64, i1, i8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
 

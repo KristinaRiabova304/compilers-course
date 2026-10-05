@@ -1,96 +1,155 @@
-AI USAGE LOG Practice 4: types, comparisons and a semantic pass
+AI USAGE LOG Practice 5: if/else, scopes and basic blocks
 Languages and Compilers Design
 
 Інструмент: Claude Code (Anthropic), модель Claude Sonnet 5.
 
 Як використовувався AI:
-- Отримав завдання у вигляді PDF-файлу практики (w04-practice.pdf) поверх
-  наявних lexer.py/parser.py/ast_nodes.py/gen.py/compiler.py з Practice 3.
-- Розширив lexer.py (Task 1): додав ключові слова i64, bool, true, false
-  до KEYWORDS; додав стани EQ і BANG для дворядкових операторів == і !=
-  (за зразком уже наявного стану COLON для :=); поодинокі '=' і '!' тепер
-  дають лексичну помилку "expected '==' ..."/"expected '!=' ..." замість
-  негайного "unexpected byte", з точним line:column байта.
-- Розширив ast_nodes.py: DeclNode тепер зберігає type_name; додав
-  BoolNode (літерал true/false) з власним dump(); формат Decl у dump()
-  став "Decl <name> <type> <mut|const>" за прикладом з методички.
-- Переписав parser.py під нову граматику: decl зчитує тип перед іменем;
-  колишній parse_expr (ланцюжок +/-) перейменовано на parse_arith; новий
-  parse_expr = arith [("=="|"!=") arith] — один порівняльний оператор,
-  що зв'язує слабше за арифметику; parse_factor приймає number|true|
-  false|ident.
-- Написав новий файл checker.py (Task 2) — клас SemanticChecker, окремий
-  обхід дерева до створення builder'а. Володіє таблицею символів
-  (ім'я -> DeclNode), для кожного виразу обчислює node.type і зберігає
-  його на вузлі, для кожного Var/Assign записує node.decl. Реалізував
-  усі правила типів з методички: + - * тільки для двох цілих (результат
-  — ширший тип), == != для двох цілих будь-якої ширини або двох bool,
-  i32 -> i64 єдине неявне розширення, константа отримує найвужчий тип,
-  що вміщає (i32, інакше i64, інакше помилка), і три старі перевірки
-  (оголошено раз, оголошено до використання, mut перед :=), перенесені
-  з gen.py без зміни тексту повідомлень і позицій. Окремо обробив
-  випадок константи, що не влазить у цільовий тип (наприклад,
-  "line 1:7: constant 3000000000 does not fit in i32" — позиція на
-  константі, а не на імені) за допомогою isinstance-перевірки в
-  check_assignable, як натякає "at the constant" в списку помилок PDF.
-- Переписав gen.py (Task 3) під перевірене дерево: типізовані alloca
-  (i32/i64/i1 за node.type_name), один coerce()-хелпер, що робить sext
-  i32->i64 у п'яти місцях, куди checker.py дозволив розширення
-  (ініціалізатор, присвоєння, обидва операнди +-*, обидва операнди ==
-  != після вирівнювання ширини, значення exit); == != стали icmp_signed
-  з попереднім вирівнюванням ширини; exit цілого числа розширює його до
-  i64 і друкує через printf з %lld, exit bool обирає між рядками "true"
-  і "false" через builder.select() і друкує через %s. Жодних перевірок
-  у CodeGen більше немає — код довіряє node.type/node.decl.
-- Оновив compiler.py: додав виклик SemanticChecker().check(program) на
-  початку compile_program (до створення IR-модуля), додав два формати
-  printf (fmt_int, fmt_bool) і дві рядкові константи (str_true,
-  str_false) як глобальні змінні модуля.
-- Оновив grammar.ebnf під нову граматику (type, expr/arith/term/factor,
-  == != як окремий рівень над +-*).
-- Реструктуризував tests/: перемістив старі valid_*/invalid_* файли
-  (Practice 2/3) у tests/ok/ і tests/err/ відповідно до вимоги завдання
-  "tests/ok and tests/err"; виправив у трьох старих .expected файлах
-  формулювання повідомлення parse_factor (тепер згадує 'true'/'false');
-  перегенерував .ast-знімки для 5 файлів, що мали їх, читаючи новий
-  формат Decl (додано поле типу). Додав 6 нових ok-тестів
-  (i64_widen_init, i64_widen_plus, i64_const_literal, compare_diff_width,
-  bool_compare, bool_exit) і 8 нових err-тестів (bool_in_arithmetic,
-  narrowing_i64_to_i32, narrowing_bool_to_int, narrowing_int_to_bool,
-  const_overflow_i64, bool_compare_int, bare_equals, bare_bang), кожен
-  з .expected, отриманим реальним запуском компілятора/lli, а не
-  написаним вручну. Оновив tests/run_tests.py: замість сканування
-  tests/*.txt за префіксом valid_/invalid_ тепер сканує tests/ok/*.txt
-  і tests/err/*.txt окремо.
-- Оновив README.md під нову структуру файлів (checker.py, tests/ok,
-  tests/err) і опис мови (типи, порівняння, правила розширення).
+- Отримав завдання у вигляді PDF-файлу практики (w05-practice.pdf) поверх
+  наявних lexer.py/ast_nodes.py/parser.py/checker.py/gen.py/compiler.py
+  з Practice 4. Створив окрему гілку practice-5 від practice-4 (без push).
+- Розширив lexer.py (Task 1): додав ключові слова if/else/while до
+  KEYWORDS. Прибрав увесь механізм парного закриття '{' на тому ж рядку
+  (open_brace/close_line) — за методичкою { і } тепер звичайні токени
+  ("block"/"start" і "block"/"end", як і раніше), пару їм шукає парсер,
+  а не лексер. Переробив стан BANG: на "=" як і раніше дає "!=", на
+  будь-який інший байт тепер віддає токен-оператор "!" і перечитує цей
+  байт у стані START (той самий прийом, що вже був для кінця
+  ідентифікатора/числа) — раніше поодинокий "!" був лексичною помилкою,
+  тепер це легітимний префіксний оператор.
+- Розширив ast_nodes.py: додав BlockNode (statements + опціональний
+  exit, accept -> visit_block, dump виводить "Block" і дітей з відступом
+  +1 — не StmtNode, бо сама по собі блок не є statement з граматики),
+  IfNode (condition, then_block, опціональний else_block; accept ->
+  visit_if; dump виводить "If", умову й блок(и) з відступом +1 — формат
+  звірено з прикладом dump() у методичці для вкладеної warm-up
+  програми), WhileNode (аналогічно, dump "While"), NotNode (operand,
+  accept -> visit_not, dump "Not").
+- Переписав parser.py під множинні рядки одного statement. Головна
+  зміна: курсор рядків (self.lines/self.line_pos) поряд із токен-
+  курсором (self.toks/self.pos) — peek_line()/next_line() за прикладом
+  із методички. parse_statement(first) — диспетчер за першим токеном
+  уже зчитаного рядка (decl/assign/if/while); parse_block(after) сам
+  виконує next_line() для рядка з "{", потім у циклі next_line() для
+  кожного рядка тіла, поки не зустріне рядок "}" (окрема помилка
+  "'{' is never closed", якщо рядки скінчились раніше); перевіряє
+  порожній блок (ні одного statement, ні exit) і "statement after
+  'exit' in the same block". parse_if: умова на рядку "if", перевірка
+  кінця рядка (unexpected '{' after the statement — якщо хтось написав
+  "if b {" в один рядок), then-блок через parse_block("if"), опціо-
+  нально наступний рядок "else" + parse_block("else"). Поза
+  parse_block/parse_if рядок, що починається з "else", дає окрему
+  помилку "'else' without an 'if'" — і на верхньому рівні програми,
+  і всередині будь-якого блоку. parse_factor додав гілку для "!"
+  (NotNode, рекурсивно бере ще один factor — правоасоціативний
+  префікс); повідомлення про очікуваний factor тепер згадує і '!'.
+- Переписав checker.py (Task 2) під стек фреймів: self.scopes — список
+  словників, найглибший останній. visit_block штовхає {} на вхід і
+  знімає на вихід (за прикладом коду з методички), visit_decl перевіряє
+  дублікат лише у верхньому фреймі (self.scopes[-1]) — тож ім'я з
+  зовнішнього фрейму можна оголосити заново всередині з будь-яким типом
+  (shadowing), lookup() іде по фреймах від верхнього до найглибшого,
+  перший збіг повертає, інакше "used before its declaration" (так само
+  для імені, чий фрейм уже знято — рівно той "inner used after its
+  block" кейс). visit_if/visit_while перевіряють, що умова має тип
+  bool, і той самий рядок:колонку для обох (просто інший текст
+  "if"/"while"). visit_not перевіряє, що операнд — bool ("cannot apply
+  '!' to i32" і т.п.), сам стає bool. Контракт для gen.py не змінився:
+  node.decl на Var/Assign вказує саме на той DeclNode, що резолвився
+  (три різні x у warm-up — три різні об'єкти DeclNode, навіть з
+  однаковим ім'ям).
+- Переписав gen.py (Task 3) під базові блоки. CodeGen більше не має
+  власного скоупу — self.ptrs і далі словник DeclNode -> alloca ptr
+  (ключ за ідентичністю об'єкта, не за ім'ям — працює для shadowing без
+  жодних змін, це вже було зроблено в Practice 4 для defend проти
+  повторного імені, зараз просто природно покриває і вкладені блоки).
+  visit_if: three basic blocks через self.builder.function.
+  append_basic_block("then"/"else"/"merge"), один cbranch на умову;
+  позиціонування then/else через position_at_end, перевірка
+  self.builder.block.is_terminated (не then_bb/else_bb напряму — як і
+  застерігає методичка, вкладений if міг перемістити builder у власний
+  merge) перед додаванням br у merge; якщо else немає — cbranch одразу
+  в merge. visit_while: три блоки while_cond/while_body/while_end,
+  безумовний br у while_cond перед циклом, cbranch(cond, body, end) у
+  кінці cond-блоку, br назад у while_cond у кінці body (back edge),
+  якщо body сам не термінувався (exit усередині циклу залишає блок
+  термінованим). visit_decl: усі alloca йдуть у entry-блок через
+  builder.goto_entry_block() (вбудований у llvmlite контекстний
+  менеджер IRBuilder — робить рівно те, що методичка просить написати
+  як "один хелпер": позиціонує builder у entry, повертає позицію назад
+  після виходу) — незалежно від того, в якому блоці стоїть builder
+  у момент зустрічі з decl (then/else/while_body), бо mem2reg
+  промотує в регістри лише entry-блокові alloca. visit_not:
+  builder.not_() (xor з усіма одиницями — для i1 це і є логічне
+  заперечення). visit_exit не змінився: emits printf+ret там, де зараз
+  стоїть builder, лишає блок термінованим.
+- compiler.py: сигнатура CodeGen не змінилась (їй вистачає
+  self.builder.function, щоб діставати поточну функцію для
+  append_basic_block і goto_entry_block), тільки ir.Module(name=...)
+  тепер "practice5".
+- Оновив grammar.ebnf: statement += if | while, нове правило block,
+  factor += "!" factor; переніс опис scope-стеку й бул-умов if/while/!
+  у розділ семантики (що не виражається в EBNF).
+- Оновив README.md під Practice 5 (опис if/else/while/block/scope-
+  фреймів/shadowing, приклад мови з if-else і while, додав
+  opt -passes=mem2reg у "Running the compiler").
+- Залишив файли на корені репозиторію (compiler.py тощо), а не під
+  src/, як у підказці PDF "Push ... src/compiler.py" — це суперечило б
+  усій наявній структурі репозиторію з Practice 1-4, тому свідомо не
+  переносив.
+- Додав тести (запущено реальним компілятором, .expected — результат
+  фактичного запуску, не написаний вручну):
+  tests/ok/ (8 нових): if_else_arith (приклад a+5/a-5 з методички, 15),
+  if_without_else, if_nested_warmup (warm-up програма з методички, 20,
+  + .ast-знімок, звірений рядок-в-рядок із прикладом dump() у PDF),
+  not_operator (другий приклад методички з !, true), scope_shadow_type
+  (shadowing з іншим типом), exit_inside_both_arms (exit в обох гілках
+  — merge-блок без предків, але валідний), assign_both_arms_phi
+  (приклад методички "The phi you did not write", r:=1/r:=2, 1),
+  while_sum (приклад методички, 1..10, 55).
+  tests/err/ (11 нових): if_cond_not_bool, while_cond_not_bool,
+  not_on_int, use_after_block (ім'я з популярного блоку після його
+  завершення), redeclare_same_block, assign_inner_x_wrong_type
+  (присвоєння внутрішньому x, а не зовнішньому — тест, що node.decl
+  резолвиться правильно при shadowing), brace_on_if_line ("if true {"
+  в один рядок), empty_block, else_without_if, unclosed_brace,
+  statement_after_exit_in_block.
+  Оновив 6 старих .expected у tests/err/ (bare_bang,
+  invalid_02_unterminated_brace, invalid_06_redeclared_variable,
+  invalid_07/08/09_*) — формулювання помилок змінилося за задумом
+  методички: бare "!" більше не лексична помилка (тепер валідний
+  факт-оператор, помилка стала "cannot start a statement with '!'"),
+  незакритий "{" у decl тепер ловить парсер, а не лексер
+  ("expected '}' to close the initialiser" замість
+  "'{' is not closed..."), повідомлення parse_factor згадує '!',
+  "already declared" тепер "already declared in this block".
 
-Перевірка результатів (виконано вручну студентом):
-- --ast для робочого прикладу Task 1 з методички (i64 a, bool b/c/d/e,
-  i32 x, i64 y/z, вираз y := y*z+a) звірено вручну з очікуваною формою
-  дерева — збігається.
-- Той самий приклад прогнано через lli: "Program exit with result 385"
-  — збігається з очікуванням у PDF. exit e (bool, true) дає
-  "Program exit with result true".
-- Дві лексичні помилки з попередження Task 1: "a = 1" дає
-  "line 2:3: expected '==' (a single '=' is not an operator)", "!b" дає
-  "line 2:1: expected '!=' (a single '!' is not an operator)".
-- П'ять програм-помилок Task 2 (по одному правилу: bool у +, bool у
-  порівнянні з i32, i32{a+b} де a+b має тип i64, присвоєння i64 в i32
-  mut-змінну, константа 3000000000 в i32) перевірено вручну — кожна
-  дає рядок з методички дослівно, включно з "line 1:7: constant
-  3000000000 does not fit in i32" і "line 2:5: cannot initialise 'c' of
-  type i32 with a value of type i64". Ті самі п'ять програм із
-  виправленим рядком перевірено — компілюються й дають очікуваний
-  результат через lli.
-- sext видно в output.ll на кожному з п'яти місць (ініціалізатор,
-  присвоєння, операнди +-*, операнди ==!=, значення exit) — перевірено
-  вручну по тексту IR для робочого прикладу.
-- Усі програми Practice 2/3 (11 valid + 11 invalid, тепер у tests/ok і
-  tests/err) перепрогнано через новий компілятор до реструктуризації —
-  жодних регресій, окрім очікуваної зміни формулювання в трьох invalid-
-  тестах (parse_factor тепер згадує true/false).
-- tests/run_tests.py: 36/36 passed (17 ok, 19 err) після реструктуризації
-  і додавання нових тестів Practice 4.
+Перевірка результатів (виконано вручну студентом через запуски
+компілятора/lli/opt, наведені нижче команди фактично виконувались):
+- --ast для warm-up програми з методички збігається дослівно з
+  прикладом dump() у PDF (Program/Decl x i32 mut/If/Bool true/Block/
+  Decl x bool mut/If/Var x/Block/Decl x i64 mut/.../Exit/Var x двічі).
+  lli на той самий файл: "Program exit with result 20" — як і очікує
+  PDF ("Keep the sheet; Task 3 asks for the same program from lli").
+- Приклад if/else з a{10}, a+5/a-5: "Program exit with result 15" —
+  збігається з "Expected: Program exit with result 15" з PDF.
+- Другий приклад з !: a/b/c/d, if !c { exit d }: "Program exit with
+  result true" — збігається з "Expected: ... result true".
+- while-приклад (сума 1..10): "Program exit with result 55" —
+  збігається з "Show: 55 through lli".
+- Приклад "The phi you did not write" (r:=1/r:=2 за n==3): компіляція
+  дає "Program exit with result 1"; opt -passes=mem2reg -S на output.ll
+  містить рядок "%r.0 = phi i32 [ 1, %then ], [ 2, %else ]" — дослівно
+  як у методичці.
+- П'ять+ помилкових програм Task 1/2 (умова if не bool, ! на i32, ім'я
+  поза блоком, повторне оголошення в блоці, "if b {" в один рядок,
+  порожній блок, else без if, незакрита "{", statement після exit)
+  перевірено вручну — кожна падає компіляцію з очікуваним
+  рядок:колонка; жодна не залишає .ll файл (check_err у run_tests.py
+  це теж перевіряє).
+- tests/run_tests.py: 57/57 passed (25 ok, 32 err) — усі старі тести
+  Practice 2/3/4 і нові Practice 5 одночасно зелені.
 
-
+Що НЕ використовував AI: жодного коду не копійовано з інших джерел;
+весь lexer/parser/checker/gen написаний з нуля під конкретні вимоги
+методички (no regex, no parser generator, no eval, IR лише через
+llvmlite.ir, жодної збірки .ll рядками).

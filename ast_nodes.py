@@ -62,6 +62,55 @@ class ExitNode(Node):
         self.value.dump(indent + 1)
 
 
+class BlockNode(Node):
+    """A '{' ... '}' body: zero or more statements, an optional trailing
+    exit. Not itself a statement - If and While hold one or two of these."""
+
+    def __init__(self, line, col, statements, exit_node):
+        super().__init__(line, col)
+        self.statements, self.exit = statements, exit_node
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + "Block")
+        for stmt in self.statements:
+            stmt.dump(indent + 1)
+        if self.exit:
+            self.exit.dump(indent + 1)
+
+
+class IfNode(StmtNode):
+    def __init__(self, line, col, condition, then_block, else_block):
+        super().__init__(line, col)
+        self.condition, self.then_block, self.else_block = condition, then_block, else_block
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + "If")
+        self.condition.dump(indent + 1)
+        self.then_block.dump(indent + 1)
+        if self.else_block:
+            self.else_block.dump(indent + 1)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, line, col, condition, body):
+        super().__init__(line, col)
+        self.condition, self.body = condition, body
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + "While")
+        self.condition.dump(indent + 1)
+        self.body.dump(indent + 1)
+
+
 class ExprNode(Node):
     pass
 
@@ -114,3 +163,16 @@ class BoolNode(ExprNode):
 
     def dump(self, indent=0):
         print("  " * indent + f"Bool {'true' if self.value else 'false'}")
+
+
+class NotNode(ExprNode):
+    def __init__(self, line, col, operand):
+        super().__init__(line, col)
+        self.operand = operand
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + "Not")
+        self.operand.dump(indent + 1)

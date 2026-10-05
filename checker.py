@@ -1,10 +1,11 @@
 """Task 2: a semantic pass of its own.
 
 Walks the tree the parser produced, before any IR exists. Owns the symbol
-table (name -> DeclNode) and decides the type of every expression, storing
-it on the node (node.type); a name also stores the declaration it resolved
-to (node.decl). Rejects the program with line:column; the generator in
-gen.py reads node.type/node.decl and looks nothing up itself.
+table - now a stack of frames, one per block - and decides the type of
+every expression, storing it on the node (node.type); a name also stores
+the declaration it resolved to (node.decl). Rejects the program with
+line:column; the generator in gen.py reads node.type/node.decl and looks
+nothing up itself.
 """
 from ast_nodes import ConstNode
 from lexer import CompileError
@@ -14,28 +15,57 @@ INT_TYPES = ("i32", "i64")
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}  # name -> DeclNode
+        self.scopes = [{}]  # stack of frames: name -> DeclNode, innermost last
 
     def check(self, program):
         program.accept(self)
+
+    def lookup(self, node, name):
+        for frame in reversed(self.scopes):
+            if name in frame:
+                return frame[name]
+        raise CompileError(node.line, node.col,
+                            f"variable '{name}' is used before its declaration")
 
     def visit_program(self, node):
         for stmt in node.statements:
             stmt.accept(self)
         node.exit.accept(self)
 
+    def visit_block(self, node):
+        self.scopes.append({})
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+        self.scopes.pop()
+
+    def visit_if(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(node.line, node.col,
+                                f"the condition of 'if' must be bool, got {cond_type}")
+        node.then_block.accept(self)
+        if node.else_block:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        cond_type = node.condition.accept(self)
+        if cond_type != "bool":
+            raise CompileError(node.line, node.col,
+                                f"the condition of 'while' must be bool, got {cond_type}")
+        node.body.accept(self)
+
     def visit_decl(self, node):
-        if node.name in self.symbols:
-            raise CompileError(node.line, node.col, f"variable '{node.name}' is already declared")
+        if node.name in self.scopes[-1]:
+            raise CompileError(node.line, node.col,
+                                f"variable '{node.name}' is already declared in this block")
         node.init.accept(self)  # before the name exists: no self-reference
         self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
-        self.symbols[node.name] = node
+        self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(node.line, node.col,
-                                f"variable '{node.name}' is used before its declaration")
-        decl = self.symbols[node.name]
+        decl = self.lookup(node, node.name)
         if not decl.mutable:
             raise CompileError(node.line, node.col, f"cannot assign to '{node.name}': it is not mut")
         node.decl = decl
@@ -60,11 +90,15 @@ class SemanticChecker:
             node.type = "bool"
         return node.type
 
+    def visit_not(self, node):
+        operand_type = node.operand.accept(self)
+        if operand_type != "bool":
+            raise CompileError(node.line, node.col, f"cannot apply '!' to {operand_type}")
+        node.type = "bool"
+        return node.type
+
     def visit_var(self, node):
-        if node.name not in self.symbols:
-            raise CompileError(node.line, node.col,
-                                f"variable '{node.name}' is used before its declaration")
-        node.decl = self.symbols[node.name]
+        node.decl = self.lookup(node, node.name)
         node.type = node.decl.type_name
         return node.type
 

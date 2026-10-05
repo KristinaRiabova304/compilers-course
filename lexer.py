@@ -25,6 +25,9 @@ KEYWORDS = {
     "exit": ("keyword", "statement"),
     "true": ("keyword", "boolean"),
     "false": ("keyword", "boolean"),
+    "if": ("keyword", "if"),
+    "else": ("keyword", "else"),
+    "while": ("keyword", "while"),
 }
 
 SINGLE_BYTE_OPS = {ord("+"): "+", ord("-"): "-", ord("*"): "*"}
@@ -63,14 +66,6 @@ def lex(data: bytes):
     state = "START"
     start_i = start_line = start_col = 0
     line, col = 1, 1
-    open_brace = None  # (line, col) of an unmatched '{' on the current line
-
-    def close_line():
-        nonlocal open_brace
-        if open_brace is not None:
-            l, c = open_brace
-            raise CompileError(l, c, "'{' is not closed before the end of the line")
-        open_brace = None
 
     i, n = 0, len(data)
     while i <= n:
@@ -82,7 +77,6 @@ def lex(data: bytes):
             elif b in (32, 9):  # space, tab
                 pass
             elif b == 10:  # \n
-                close_line()
                 tokens.append(Token("endline", None, "\n", line, col))
                 line += 1
                 col = 0
@@ -91,12 +85,8 @@ def lex(data: bytes):
             elif is_digit(b):
                 state, start_i, start_line, start_col = "NUMBER", i, line, col
             elif b == ord("{"):
-                if open_brace is not None:
-                    raise CompileError(line, col, "unexpected byte '{'")
-                open_brace = (line, col)
                 tokens.append(Token("block", "start", "{", line, col))
             elif b == ord("}"):
-                open_brace = None
                 tokens.append(Token("block", "end", "}", line, col))
             elif b in SINGLE_BYTE_OPS:
                 tokens.append(Token("operator", None, chr(b), line, col))
@@ -153,13 +143,13 @@ def lex(data: bytes):
                 tokens.append(Token("operator", None, "!=", start_line, start_col))
                 state = "START"
             else:
-                raise CompileError(start_line, start_col,
-                                    "expected '!=' (a single '!' is not an operator)")
+                tokens.append(Token("operator", None, "!", start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
 
         i += 1
         col += 1
 
-    close_line()
     return tokens
 
 

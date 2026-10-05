@@ -1,10 +1,25 @@
-from ast_nodes import AssignNode, BinOpNode, BoolNode, ConstNode, DeclNode, ExitNode, ProgramNode, VarNode
+from ast_nodes import (
+    AssignNode, BinOpNode, BlockNode, BoolNode, ConstNode, DeclNode, ExitNode,
+    IfNode, NotNode, ProgramNode, VarNode, WhileNode,
+)
 from lexer import CompileError
 
 
 class Parser:
+    """A line cursor on top of the token cursor: most statements are one
+    line, but if/else/while are several, so parse_statement may consume
+    more than one line of self.lines before returning."""
+
     def __init__(self, lines):
-        self.lines, self.toks, self.pos = lines, [], 0
+        self.lines, self.line_pos = lines, 0
+        self.toks, self.pos = [], 0
+
+    def peek_line(self):
+        return self.lines[self.line_pos] if self.line_pos < len(self.lines) else None
+
+    def next_line(self):
+        self.toks, self.pos = self.lines[self.line_pos], 0
+        self.line_pos += 1
 
     def peek(self):
         return self.toks[self.pos] if self.pos < len(self.toks) else None
@@ -22,36 +37,52 @@ class Parser:
             return CompileError(last.line, last.col + len(last.text), msg)
         return CompileError(1, 1, msg)
 
+    def end_of_line(self):
+        leftover = self.peek()
+        if leftover is not None:
+            raise self.error(f"unexpected '{leftover.text}' after the statement", leftover)
+
     def parse_program(self):
         stmts, exit_node = [], None
-        for toks in self.lines:
-            self.toks, self.pos = toks, 0
+        while True:
+            line = self.peek_line()
+            if line is None:
+                break
+            self.next_line()
             first = self.peek()
-            if first is None:
-                continue
 
             if exit_node is not None:
                 raise self.error("no statements are allowed after 'exit'", first)
 
             if first.kind == "keyword" and first.sub == "statement":
                 exit_node = self.parse_exit()
-            elif first.kind == "keyword" and first.sub == "typename":
-                stmts.append(self.parse_decl())
-            elif first.kind == "identifier":
-                stmts.append(self.parse_assign())
+                self.end_of_line()
+            elif first.kind == "keyword" and first.sub == "else":
+                raise self.error("'else' without an 'if'", first)
             else:
-                raise self.error(f"cannot start a statement with '{first.text}'", first)
-
-            leftover = self.peek()
-            if leftover is not None:
-                raise self.error(f"unexpected '{leftover.text}' after the statement", leftover)
+                stmts.append(self.parse_statement(first))
 
         if exit_node is None:
-            if self.lines:
-                self.toks = self.lines[-1]
             raise self.error("program has no 'exit' statement")
 
         return ProgramNode(1, 1, stmts, exit_node)
+
+    def parse_statement(self, first):
+        """first is the already-peeked (not yet eaten) first token of the
+        current line; dispatches to the one rule it can start."""
+        if first.kind == "keyword" and first.sub == "typename":
+            node = self.parse_decl()
+            self.end_of_line()
+            return node
+        if first.kind == "identifier":
+            node = self.parse_assign()
+            self.end_of_line()
+            return node
+        if first.kind == "keyword" and first.sub == "if":
+            return self.parse_if()
+        if first.kind == "keyword" and first.sub == "while":
+            return self.parse_while()
+        raise self.error(f"cannot start a statement with '{first.text}'", first)
 
     def parse_decl(self):
         type_tok = self.eat()
@@ -104,6 +135,74 @@ class Parser:
         value = self.parse_factor()
         return ExitNode(exit_tok.line, exit_tok.col, value)
 
+    def parse_if(self):
+        if_tok = self.eat()
+        condition = self.parse_expr()
+        self.end_of_line()
+
+        then_block = self.parse_block("if")
+
+        else_block = None
+        nxt = self.peek_line()
+        if nxt and nxt[0].kind == "keyword" and nxt[0].sub == "else":
+            self.next_line()
+            self.eat()
+            self.end_of_line()
+            else_block = self.parse_block("else")
+
+        return IfNode(if_tok.line, if_tok.col, condition, then_block, else_block)
+
+    def parse_while(self):
+        while_tok = self.eat()
+        condition = self.parse_expr()
+        self.end_of_line()
+
+        body = self.parse_block("while")
+        return WhileNode(while_tok.line, while_tok.col, condition, body)
+
+    def parse_block(self, after):
+        """'{' NL { statement } [ exit NL ] '}' NL - not empty. after names
+        the keyword this block follows, for the 'expected {' message."""
+        line = self.peek_line()
+        if line is None:
+            raise self.error(f"expected '{{' on its own line after '{after}', found end of program")
+        self.next_line()
+        open_tok = self.peek()
+        if open_tok is None or not (open_tok.kind == "block" and open_tok.sub == "start"):
+            got = open_tok.text if open_tok is not None else "end of line"
+            raise self.error(f"expected '{{' on its own line after '{after}', got '{got}'", open_tok)
+        self.eat()
+        self.end_of_line()
+
+        statements, exit_node = [], None
+        while True:
+            line = self.peek_line()
+            if line is None:
+                raise CompileError(open_tok.line, open_tok.col, "'{' is never closed")
+            self.next_line()
+            first = self.peek()
+
+            if first.kind == "block" and first.sub == "end":
+                self.eat()
+                self.end_of_line()
+                break
+
+            if exit_node is not None:
+                raise self.error("statement after 'exit' in the same block", first)
+
+            if first.kind == "keyword" and first.sub == "statement":
+                exit_node = self.parse_exit()
+                self.end_of_line()
+            elif first.kind == "keyword" and first.sub == "else":
+                raise self.error("'else' without an 'if'", first)
+            else:
+                statements.append(self.parse_statement(first))
+
+        if not statements and exit_node is None:
+            raise CompileError(open_tok.line, open_tok.col, "empty block")
+
+        return BlockNode(open_tok.line, open_tok.col, statements, exit_node)
+
     def parse_expr(self):
         node = self.parse_arith()
         tok = self.peek()
@@ -135,7 +234,11 @@ class Parser:
     def parse_factor(self):
         tok = self.peek()
         if tok is None:
-            raise self.error("expected a constant, 'true'/'false' or a variable, found end of line")
+            raise self.error("expected a constant, 'true'/'false', a variable or '!', "
+                              "found end of line")
+        if tok.kind == "operator" and tok.text == "!":
+            self.eat()
+            return NotNode(tok.line, tok.col, self.parse_factor())
         if tok.kind == "constant":
             self.eat()
             return ConstNode(tok.line, tok.col, int(tok.text))
@@ -145,4 +248,5 @@ class Parser:
         if tok.kind == "identifier":
             self.eat()
             return VarNode(tok.line, tok.col, tok.text)
-        raise self.error(f"expected a constant, 'true'/'false' or a variable, got '{tok.text}'", tok)
+        raise self.error(f"expected a constant, 'true'/'false', a variable or '!', "
+                          f"got '{tok.text}'", tok)
