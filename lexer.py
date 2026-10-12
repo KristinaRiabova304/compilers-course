@@ -28,9 +28,12 @@ KEYWORDS = {
     "if": ("keyword", "if"),
     "else": ("keyword", "else"),
     "while": ("keyword", "while"),
+    "struct": ("keyword", "struct"),
+    "fn": ("keyword", "fn"),
 }
 
-SINGLE_BYTE_OPS = {ord("+"): "+", ord("-"): "-", ord("*"): "*"}
+# '-' is not here: it needs one byte of lookahead to tell '-' from '->'.
+SINGLE_BYTE_OPS = {ord("+"): "+", ord("*"): "*", ord("."): ".", ord(","): ","}
 
 
 class Token:
@@ -88,6 +91,10 @@ def lex(data: bytes):
                 tokens.append(Token("block", "start", "{", line, col))
             elif b == ord("}"):
                 tokens.append(Token("block", "end", "}", line, col))
+            elif b == ord("("):
+                tokens.append(Token("paren", "start", "(", line, col))
+            elif b == ord(")"):
+                tokens.append(Token("paren", "end", ")", line, col))
             elif b in SINGLE_BYTE_OPS:
                 tokens.append(Token("operator", None, chr(b), line, col))
             elif b == ord(":"):
@@ -96,6 +103,8 @@ def lex(data: bytes):
                 state, start_i, start_line, start_col = "EQ", i, line, col
             elif b == ord("!"):
                 state, start_i, start_line, start_col = "BANG", i, line, col
+            elif b == ord("-"):
+                state, start_i, start_line, start_col = "MINUS", i, line, col
             else:
                 ch = chr(b) if 32 <= b < 127 else f"\\x{b:02x}"
                 raise CompileError(line, col, f"unexpected byte '{ch}'")
@@ -144,6 +153,15 @@ def lex(data: bytes):
                 state = "START"
             else:
                 tokens.append(Token("operator", None, "!", start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
+
+        elif state == "MINUS":
+            if b == ord(">"):
+                tokens.append(Token("operator", None, "->", start_line, start_col))
+                state = "START"
+            else:
+                tokens.append(Token("operator", None, "-", start_line, start_col))
                 state = "START"
                 continue  # re-read this byte in START
 

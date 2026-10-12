@@ -1,155 +1,175 @@
-AI USAGE LOG Practice 5: if/else, scopes and basic blocks
+AI USAGE LOG Practice 6: structs and functions
 Languages and Compilers Design
 
 Інструмент: Claude Code (Anthropic), модель Claude Sonnet 5.
 
 Як використовувався AI:
-- Отримав завдання у вигляді PDF-файлу практики (w05-practice.pdf) поверх
+- Отримав завдання у вигляді PDF-файлу практики (w06-practice.pdf) поверх
   наявних lexer.py/ast_nodes.py/parser.py/checker.py/gen.py/compiler.py
-  з Practice 4. Створив окрему гілку practice-5 від practice-4 (без push).
-- Розширив lexer.py (Task 1): додав ключові слова if/else/while до
-  KEYWORDS. Прибрав увесь механізм парного закриття '{' на тому ж рядку
-  (open_brace/close_line) — за методичкою { і } тепер звичайні токени
-  ("block"/"start" і "block"/"end", як і раніше), пару їм шукає парсер,
-  а не лексер. Переробив стан BANG: на "=" як і раніше дає "!=", на
-  будь-який інший байт тепер віддає токен-оператор "!" і перечитує цей
-  байт у стані START (той самий прийом, що вже був для кінця
-  ідентифікатора/числа) — раніше поодинокий "!" був лексичною помилкою,
-  тепер це легітимний префіксний оператор.
-- Розширив ast_nodes.py: додав BlockNode (statements + опціональний
-  exit, accept -> visit_block, dump виводить "Block" і дітей з відступом
-  +1 — не StmtNode, бо сама по собі блок не є statement з граматики),
-  IfNode (condition, then_block, опціональний else_block; accept ->
-  visit_if; dump виводить "If", умову й блок(и) з відступом +1 — формат
-  звірено з прикладом dump() у методичці для вкладеної warm-up
-  програми), WhileNode (аналогічно, dump "While"), NotNode (operand,
-  accept -> visit_not, dump "Not").
-- Переписав parser.py під множинні рядки одного statement. Головна
-  зміна: курсор рядків (self.lines/self.line_pos) поряд із токен-
-  курсором (self.toks/self.pos) — peek_line()/next_line() за прикладом
-  із методички. parse_statement(first) — диспетчер за першим токеном
-  уже зчитаного рядка (decl/assign/if/while); parse_block(after) сам
-  виконує next_line() для рядка з "{", потім у циклі next_line() для
-  кожного рядка тіла, поки не зустріне рядок "}" (окрема помилка
-  "'{' is never closed", якщо рядки скінчились раніше); перевіряє
-  порожній блок (ні одного statement, ні exit) і "statement after
-  'exit' in the same block". parse_if: умова на рядку "if", перевірка
-  кінця рядка (unexpected '{' after the statement — якщо хтось написав
-  "if b {" в один рядок), then-блок через parse_block("if"), опціо-
-  нально наступний рядок "else" + parse_block("else"). Поза
-  parse_block/parse_if рядок, що починається з "else", дає окрему
-  помилку "'else' without an 'if'" — і на верхньому рівні програми,
-  і всередині будь-якого блоку. parse_factor додав гілку для "!"
-  (NotNode, рекурсивно бере ще один factor — правоасоціативний
-  префікс); повідомлення про очікуваний factor тепер згадує і '!'.
-- Переписав checker.py (Task 2) під стек фреймів: self.scopes — список
-  словників, найглибший останній. visit_block штовхає {} на вхід і
-  знімає на вихід (за прикладом коду з методички), visit_decl перевіряє
-  дублікат лише у верхньому фреймі (self.scopes[-1]) — тож ім'я з
-  зовнішнього фрейму можна оголосити заново всередині з будь-яким типом
-  (shadowing), lookup() іде по фреймах від верхнього до найглибшого,
-  перший збіг повертає, інакше "used before its declaration" (так само
-  для імені, чий фрейм уже знято — рівно той "inner used after its
-  block" кейс). visit_if/visit_while перевіряють, що умова має тип
-  bool, і той самий рядок:колонку для обох (просто інший текст
-  "if"/"while"). visit_not перевіряє, що операнд — bool ("cannot apply
-  '!' to i32" і т.п.), сам стає bool. Контракт для gen.py не змінився:
-  node.decl на Var/Assign вказує саме на той DeclNode, що резолвився
-  (три різні x у warm-up — три різні об'єкти DeclNode, навіть з
-  однаковим ім'ям).
-- Переписав gen.py (Task 3) під базові блоки. CodeGen більше не має
-  власного скоупу — self.ptrs і далі словник DeclNode -> alloca ptr
-  (ключ за ідентичністю об'єкта, не за ім'ям — працює для shadowing без
-  жодних змін, це вже було зроблено в Practice 4 для defend проти
-  повторного імені, зараз просто природно покриває і вкладені блоки).
-  visit_if: three basic blocks через self.builder.function.
-  append_basic_block("then"/"else"/"merge"), один cbranch на умову;
-  позиціонування then/else через position_at_end, перевірка
-  self.builder.block.is_terminated (не then_bb/else_bb напряму — як і
-  застерігає методичка, вкладений if міг перемістити builder у власний
-  merge) перед додаванням br у merge; якщо else немає — cbranch одразу
-  в merge. visit_while: три блоки while_cond/while_body/while_end,
-  безумовний br у while_cond перед циклом, cbranch(cond, body, end) у
-  кінці cond-блоку, br назад у while_cond у кінці body (back edge),
-  якщо body сам не термінувався (exit усередині циклу залишає блок
-  термінованим). visit_decl: усі alloca йдуть у entry-блок через
-  builder.goto_entry_block() (вбудований у llvmlite контекстний
-  менеджер IRBuilder — робить рівно те, що методичка просить написати
-  як "один хелпер": позиціонує builder у entry, повертає позицію назад
-  після виходу) — незалежно від того, в якому блоці стоїть builder
-  у момент зустрічі з decl (then/else/while_body), бо mem2reg
-  промотує в регістри лише entry-блокові alloca. visit_not:
-  builder.not_() (xor з усіма одиницями — для i1 це і є логічне
-  заперечення). visit_exit не змінився: emits printf+ret там, де зараз
-  стоїть builder, лишає блок термінованим.
-- compiler.py: сигнатура CodeGen не змінилась (їй вистачає
-  self.builder.function, щоб діставати поточну функцію для
-  append_basic_block і goto_entry_block), тільки ir.Module(name=...)
-  тепер "practice5".
-- Оновив grammar.ebnf: statement += if | while, нове правило block,
-  factor += "!" factor; переніс опис scope-стеку й бул-умов if/while/!
-  у розділ семантики (що не виражається в EBNF).
-- Оновив README.md під Practice 5 (опис if/else/while/block/scope-
-  фреймів/shadowing, приклад мови з if-else і while, додав
-  opt -passes=mem2reg у "Running the compiler").
-- Залишив файли на корені репозиторію (compiler.py тощо), а не під
-  src/, як у підказці PDF "Push ... src/compiler.py" — це суперечило б
-  усій наявній структурі репозиторію з Practice 1-4, тому свідомо не
-  переносив.
-- Додав тести (запущено реальним компілятором, .expected — результат
-  фактичного запуску, не написаний вручну):
-  tests/ok/ (8 нових): if_else_arith (приклад a+5/a-5 з методички, 15),
-  if_without_else, if_nested_warmup (warm-up програма з методички, 20,
-  + .ast-знімок, звірений рядок-в-рядок із прикладом dump() у PDF),
-  not_operator (другий приклад методички з !, true), scope_shadow_type
-  (shadowing з іншим типом), exit_inside_both_arms (exit в обох гілках
-  — merge-блок без предків, але валідний), assign_both_arms_phi
-  (приклад методички "The phi you did not write", r:=1/r:=2, 1),
-  while_sum (приклад методички, 1..10, 55).
-  tests/err/ (11 нових): if_cond_not_bool, while_cond_not_bool,
-  not_on_int, use_after_block (ім'я з популярного блоку після його
-  завершення), redeclare_same_block, assign_inner_x_wrong_type
-  (присвоєння внутрішньому x, а не зовнішньому — тест, що node.decl
-  резолвиться правильно при shadowing), brace_on_if_line ("if true {"
-  в один рядок), empty_block, else_without_if, unclosed_brace,
-  statement_after_exit_in_block.
-  Оновив 6 старих .expected у tests/err/ (bare_bang,
-  invalid_02_unterminated_brace, invalid_06_redeclared_variable,
-  invalid_07/08/09_*) — формулювання помилок змінилося за задумом
-  методички: бare "!" більше не лексична помилка (тепер валідний
-  факт-оператор, помилка стала "cannot start a statement with '!'"),
-  незакритий "{" у decl тепер ловить парсер, а не лексер
-  ("expected '}' to close the initialiser" замість
-  "'{' is not closed..."), повідомлення parse_factor згадує '!',
-  "already declared" тепер "already declared in this block".
+  з Practice 5, на гілці practice-6 від practice-5 (без push до кінця
+  роботи).
+- Розширив lexer.py (Task 1/2/3 потребують нових токенів): додав
+  ключові слова struct/fn до KEYWORDS. "." і "," стали однобайтовими
+  операторами поряд із "+"/"*". "(" і ")" отримали окремий вид токена
+  "paren" (а не "operator" чи "block") — так виклик функції ніколи не
+  сплутати з блоком "{"/"}" чи навпаки. "->" вимагає одного байта
+  зчитування наперед, щоб відрізнити його від самотнього "-" — за тим
+  самим прийомом, що вже був для ":=", "==", "!=", "!": стан MINUS
+  видає "->" на "-" + ">", інакше віддає токен "-" і перечитує байт
+  у START.
+- Розширив ast_nodes.py: ProgramNode тепер несе structs/fns окремо від
+  statements (і друкує їх у dump() у цьому порядку). StructNode тримає
+  fields як список кортежів (type_name, mutable, name, line, col) —
+  checker.py дозаповнює field_index/field_type/field_mut/field_order
+  після перевірки. FnNode тримає params так само кортежами і body як
+  BlockNode (той самий клас, що й у if/while). ParamNode — аналог
+  DeclNode для параметра: той самий інтерфейс (type_name/name/mutable),
+  mutable завжди False, бо "Parameters are copies and cannot be changed
+  in the body" — це дозволило checker.py/gen.py працювати з параметром
+  і локальною змінною через один і той самий код (self.scopes,
+  self.ptrs), без спеціальних гілок. InitNode — вузол ініціалізатора
+  decl: items — список значень, кожне або вираз, або вкладений InitNode
+  (додаткове завдання, вкладені {}). FieldNode (ланцюжок читання
+  x.y.z) і CallNode — нові факти. AssignNode отримав третє поле
+  fields — список полів після базового імені (порожній для звичайного
+  "x := e").
+- Переписав parser.py: parse_program тепер відстежує фазу
+  structs -> fns -> statements і відкидає struct/fn, що зустрівся після
+  пізнішої фази, рівно в тому рядку. parse_struct/parse_field_decl/
+  parse_fn/parse_param — нові однорядкові/багаторядкові правила за
+  зразком існуючого parse_block (struct і fn тіла — такі самі
+  багаторядкові конструкції, як if/while, з тим самим кursором рядків).
+  Найделікатніша зміна — parse_statement: рядок, що починається з
+  ідентифікатора, тепер може бути (a) decl зі структурним типом
+  ("Point p{10, 20}"), (b) assign ("x := e" або "x.y.z := e"), (c)
+  самотній виклик ("f(1)" — синтаксична помилка, "a call cannot stand
+  alone as a statement"). Розрізняється одним токеном зчитування
+  наперед (peek_next): другий токен ідентифікатор/"mut" -> decl;
+  інакше -> parse_assign, яка сама або знаходить ":=" (можливо, після
+  ланцюжка ".field"), або натикається на "(" і кидає помилку "call
+  alone". Так само parse_factor: ідентифікатор + "(" -> виклик,
+  ідентифікатор + "." -> ланцюжок полів (FieldNode), інакше — звичайна
+  змінна. parse_init/parse_init_item рекурсивно читають
+  "{" item {"," item} "}", де item — вираз або знову вкладені "{}"
+  (додаткове завдання) — жодного окремого синтаксису для "звичайного"
+  decl і decl зі структурою, все проходить крізь один InitNode.
+- Переписав checker.py (Task 1/2/3): додав дві нові таблиці поряд зі
+  стеком фреймів Practice 5 — self.structs (ім'я -> StructNode,
+  field_index/field_type/field_mut/field_order рахуються тут же,
+  "семантичний прохід знаходить індекс") і self.functions (ім'я ->
+  FnNode, усі сигнатури збираються одним проходом перед перевіркою
+  жодного тіла — за методичкою "first collect all the signatures, then
+  check and generate the bodies" — це дозволяє функції викликати себе
+  або функцію, оголошену нижче). declare_struct перевіряє, що тип поля
+  — вбудований або вже є в self.structs (тобто оголошений вище —
+  інакше про цикл/самовкладеність і дбати не треба, вона структурно
+  неможлива: якщо type_name == struct.name, це найбільш конкретна
+  помилка "cannot contain itself", перевіряється раніше за загальну
+  "unknown type"). check_fn_body підміняє self.scopes на свіжий стек з
+  одним фреймом параметрів (тіло не бачить змінних верхнього рівня) і
+  виставляє self.current_fn на час перевірки тіла — це і прапорець для
+  visit_exit (на верхньому рівні exit вимагає вбудованого типу, в
+  тілі функції — типу результату, з тим самим звуженням i32->i64, що
+  і скрізь), і джерело result_type для цієї перевірки.
+  resolve_chain — одна функція для читання (visit_field) і запису
+  (visit_assign) ланцюжка x.y.z: іде по полях, на кожному кроці
+  шукає структуру за поточним типом і індекс поля в ній (checker, а не
+  gen, шукає по імені — рівно та вимога з методички), при
+  require_mut=True падає на першому не-mut ланці (сама база або будь-
+  яке поле по дорозі) — приклад з методички "c.center.x := 25 # error:
+  center is const, even though c and x are mut" перевірено буквально
+  (tests/err/write_through_const_link.txt). is_fully_mut — окрема
+  перевірка саме для цілісної заміни об'єкта через ":=" без ланцюжка:
+  рекурсивно дивиться, чи всі поля структури (і структурні поля їхніх
+  структур) mut — "so := can replace a whole mut object only if all
+  its fields, at every depth, are mut" з методички; без цієї перевірки
+  можна було б замінити цілий об'єкт з немутабельним полем просто
+  тому, що сама змінна mut, що суперечить методичці. check_init
+  перевіряє InitNode проти очікуваного типу: для вбудованого типу —
+  рівно одне значення без вкладених "{}"; для структури — або одне
+  значення типу самої структури (копіювання цілого об'єкта), або рівно
+  стільки значень, скільки полів, кожне звіряється з типом свого поля,
+  рекурсивно для вкладених InitNode (додаткове завдання). Повідомлення
+  про невідповідність типу параметризовані рядком what ("initialise
+  'x'", "initialise field 'radius' of 'Circle'", "assign to
+  'c.radius'", "exit the function 'boolFn'", "pass argument 1 to
+  'add'") так, що й найпростіший decl вбудованого типу читається
+  рівно так само, як до появи структур.
+- Переписав gen.py (Task 1/2/3): CodeGen тепер створюється окремо на
+  кожне тіло функції (свій builder, свій self.ptrs) і окремо для
+  верхнього рівня (той, що працює в main) — прапорець is_top_level
+  вирішує, чи visit_exit друкує через printf і завершує програму, чи
+  просто ret типізованим значенням функції. gep_chain будує один gep
+  з ланцюжком індексів, які вже знайшов checker (field.indices) —
+  один gep замість кількох проходить крізь вкладені структури напряму
+  (перевірено на Circle.center.x через дворівневий gep). Структурне
+  значення — завжди ціле значення (first-class aggregate): параметр
+  зі структурою копіюється по значенню в alloca на вході функції,
+  повернення структури — load з alloca в ret, цілий об'єкт — load +
+  store без жодного проходу по полях. Вкладений "{}" (додаткове
+  завдання) будує одне агрегатне значення знизу вгору ланцюжком
+  insert_value, перш ніж воно взагалі потрапляє в пам'ять (gen_init_value
+  рекурсивний, той самий метод для верхнього decl і для вкладеного
+  InitNode).
+- compiler.py: будує іменовані структурні типи в порядку оголошення
+  (module.context.get_identified_type(name).set_body(...)) — кожне
+  наступне поле вже знаходить свій тип серед раніше створених, бо
+  структура може посилатись лише на оголошені вище. Оголошує сигнатури
+  всіх функцій ir.Function раніше за будь-яке тіло (щоб виклик вперед
+  чи рекурсія знаходили функцію вже створеною), з префіксом "fn_" у
+  імені IR-функції — за методичкою, щоб функція program з іменем main
+  чи printf не конфліктувала з рантаймом.
+- Оновив grammar.ebnf і README.md під Practice 6 (program тепер
+  structs -> fns -> statements -> exit, нові правила struct/fn/field/
+  call/field_decl, decl через init_value з рекурсією для вкладених
+  "{}"; розділ семантики — ланцюжки mut, резолв сигнатур перед тілами,
+  видимість параметрів).
+- Додав тести (запущено реальним компілятором через lli, .expected —
+  фактичний вивід, не написаний вручну): tests/ok/ (13 нових) —
+  рівно шість категорій з методички (struct_nested_chain, struct_field_
+  write, fn_struct_param, fn_struct_result, fn_nested_calls,
+  fn_i32_arg_into_i64_param) плюс fn_no_params (порожній список
+  параметрів), struct_whole_object_reassign і struct_copy_whole_value
+  (":=" цілого об'єкта за правилом is_fully_mut і "one value of the
+  struct's own type copies the whole object"), і всі чотири приклади
+  з методички буквально (practice_check_example — true,
+  practice_fib_example — 55, practice_combined_example — 28,
+  practice_nested_init_example — додаткове завдання, 36).
+  tests/err/ (11 нових) — шість обов'язкових категорій (unknown_field,
+  wrong_init_count, write_through_const_link, wrong_arg_count,
+  exit_wrong_type_in_fn, fn_after_statement) плюс struct_after_fn,
+  assign_const_struct_whole, call_alone_statement,
+  nested_brace_for_builtin_field (приклад з методички "Point
+  p{{1, 2}, 3}"), struct_self_containment.
 
 Перевірка результатів (виконано вручну студентом через запуски
-компілятора/lli/opt, наведені нижче команди фактично виконувались):
-- --ast для warm-up програми з методички збігається дослівно з
-  прикладом dump() у PDF (Program/Decl x i32 mut/If/Bool true/Block/
-  Decl x bool mut/If/Var x/Block/Decl x i64 mut/.../Exit/Var x двічі).
-  lli на той самий файл: "Program exit with result 20" — як і очікує
-  PDF ("Keep the sheet; Task 3 asks for the same program from lli").
-- Приклад if/else з a{10}, a+5/a-5: "Program exit with result 15" —
-  збігається з "Expected: Program exit with result 15" з PDF.
-- Другий приклад з !: a/b/c/d, if !c { exit d }: "Program exit with
-  result true" — збігається з "Expected: ... result true".
-- while-приклад (сума 1..10): "Program exit with result 55" —
-  збігається з "Show: 55 through lli".
-- Приклад "The phi you did not write" (r:=1/r:=2 за n==3): компіляція
-  дає "Program exit with result 1"; opt -passes=mem2reg -S на output.ll
-  містить рядок "%r.0 = phi i32 [ 1, %then ], [ 2, %else ]" — дослівно
-  як у методичці.
-- П'ять+ помилкових програм Task 1/2 (умова if не bool, ! на i32, ім'я
-  поза блоком, повторне оголошення в блоці, "if b {" в один рядок,
-  порожній блок, else без if, незакрита "{", statement після exit)
-  перевірено вручну — кожна падає компіляцію з очікуваним
-  рядок:колонка; жодна не залишає .ll файл (check_err у run_tests.py
-  це теж перевіряє).
-- tests/run_tests.py: 57/57 passed (25 ok, 32 err) — усі старі тести
-  Practice 2/3/4 і нові Practice 5 одночасно зелені.
+компілятора/lli, наведені нижче команди фактично виконувались):
+- Усі чотири приклади з методички дають рівно ті результати, що
+  методичка обіцяє: check(7, true) -> true, fib(10) -> 55, комбінований
+  приклад зі структурами/функціями/викликами -> 28, приклад додаткового
+  завдання з вкладеною ініціалізацією (Ring/Circle/Point) -> 36.
+- Три приклади мутабельності з методички перевірено буквально:
+  "Point p{10, 20}; p.x := 15" падає ("p is const"); "Circle mut c{p,
+  10}; c.radius := 5" компілюється й виконується (5); "c.center.x :=
+  25" падає ("center is const, even though c and x are mut").
+- output.ll комбінованого прикладу містить: %"Point" = type {i32, i32}
+  (іменований тип), getelementptr inbounds для field-доступу (у т.ч.
+  дворівневий gep для c.center.x), define %"Point" @"fn_moved"(...)
+  (визначення функції зі структурним параметром і результатом), і
+  call %"Point" @"fn_moved"(...) (виклик) — усі чотири пункти
+  submission-списку з методички присутні в одному файлі.
+- П'ять+ помилкових програм (невідоме поле, неправильна кількість
+  значень у "{}", запис крізь немутабельну ланку, неправильна
+  кількість аргументів, exit неправильного типу у функції, функція
+  після statement, struct після fn, самотній виклик, "{}" для
+  вбудованого поля, структура, що містить сама себе) перевірено
+  вручну — кожна падає компіляцію з очікуваним рядок:колонка; жодна не
+  залишає .ll файл.
+- tests/run_tests.py: 81/81 passed (37 ok, 44 err) — усі старі тести
+  Practice 2-5 і нові Practice 6 одночасно зелені.
 
 Що НЕ використовував AI: жодного коду не копійовано з інших джерел;
 весь lexer/parser/checker/gen написаний з нуля під конкретні вимоги
 методички (no regex, no parser generator, no eval, IR лише через
-llvmlite.ir, жодної збірки .ll рядками).
+llvmlite.ir, жодної збірки .ll рядками, жоден пошук поля за іменем у
+gen.py — лише за індексом, знайденим у checker.py).

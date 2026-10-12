@@ -1,10 +1,11 @@
 Program
   Decl a i32 mut
-    BinOp -
+    Init
       BinOp -
-        Const 10
-        Const 3
-      Const 2
+        BinOp -
+          Const 10
+          Const 3
+        Const 2
   Assign a
     BinOp -
       BinOp *

@@ -1,117 +1,160 @@
-# Languages and Compilers — Practice 5: if/else, scopes and basic blocks
+# Languages and Compilers — Practice 6: structs and functions
 
-A toy language with three types (`i32`, `i64`, `bool`) compiled to LLVM IR
-via `llvmlite.ir`.
+A toy language with three built-in types (`i32`, `i64`, `bool`) plus
+user-defined `struct`s, and now `fn` functions, compiled to LLVM IR via
+`llvmlite.ir`.
 
 - `lexer.py` — Task 1 (Practice 2): a hand-written byte-level lexer state
   machine (`Token`, `lex`, `split_statements`). No regular expressions, no
-  `str.split()`/`strtok`, no lexer generator. Practice 5 adds `if`,
-  `else`, `while` as keywords and `!` as its own one-byte operator (not
-  just the first half of `!=`); `{`/`}` are now plain tokens — the lexer
-  no longer requires a `{` to close on the line it opened on, since a
-  block's `{`/`}` live on their own lines and the parser pairs them.
-- `grammar.ebnf` — the language in EBNF: `statement` gained `if` and
-  `while`, both built from a new `block` rule (`"{" NL { statement }
-  [ exit NL ] "}" NL`), `factor` gained the prefix `"!" factor`.
-- `ast_nodes.py` — Task 1: the class hierarchy the grammar dictates
-  (`ProgramNode`, `DeclNode`, `AssignNode`, `ExitNode`, `BinOpNode`,
-  `VarNode`, `ConstNode`, `BoolNode`, plus Practice 5's `BlockNode`,
-  `IfNode`, `WhileNode`, `NotNode`), and the `dump()` walk behind `--ast`.
-- `parser.py` — a hand-written recursive-descent parser. Most statements
-  are one line (`peek`/`eat` over `self.toks`), but `if`/`else`/`while`
-  span several, so the parser keeps a **line cursor** next to the token
-  cursor (`peek_line`/`next_line`) and `parse_block` walks lines itself
-  until it finds the line that is just `}`. No parser generator, no
+  `str.split()`/`strtok`, no lexer generator. Practice 6 adds `struct`
+  and `fn` to `KEYWORDS`, and five new operator tokens: `.` and `,` are
+  single-byte like `+`/`*`; `(`/`)` get their own `"paren"` token kind
+  (a call's parentheses must never be mistaken for a block's `{`/`}`);
+  `->` needs one byte of lookahead to tell it from a bare `-`, so `-`
+  gets its own `MINUS` state, the same trick already used for `:=`,
+  `==`/`!=` and `!`.
+- `grammar.ebnf` — the language in EBNF: `program` now orders
+  `{ struct } { fn } { statement } exit`, `struct`/`fn`/`field_decl` are
+  new top-level rules, `decl`'s single `expr` becomes an `init_value`
+  list (a value or a nested `{ ... }`, the additional task), `factor`
+  gained `field` and `call`, `assign` gained an optional `.` chain.
+- `ast_nodes.py` — the class hierarchy the grammar dictates: `StructNode`
+  (fields as `(type_name, mutable, name, line, col)` tuples, filled in by
+  the checker with `field_index`/`field_type`/`field_mut`/`field_order`),
+  `FnNode` (params as tuples, body a `BlockNode`), `ParamNode` (stands in
+  for a parameter the same way `DeclNode` stands in for a local variable
+  — `mutable` is always `False`), `InitNode` (a decl's `{ ... }`, items
+  possibly nested `InitNode`s), `FieldNode` and `CallNode` for the new
+  factors, and `AssignNode` now carries a `fields` chain.
+- `parser.py` — a hand-written recursive-descent parser, line cursor
+  (`peek_line`/`next_line`) next to the token cursor, as in Practice 5.
+  `parse_program` tracks a `structs -> fns -> statements` phase and
+  rejects a struct/fn that shows up after a later phase has started.
+  `parse_statement`'s `identifier` branch now needs one token of
+  lookahead (`peek_next`) to tell `TypeName name{...}` (a decl with a
+  struct type) from `name := ...`/`name.field := ...` (an assign) from
+  `name(...)` on its own (a call alone is not a statement — rejected
+  right there). `parse_factor`'s `identifier` branch needs the same
+  lookahead for `name(...)` (a call) vs `name.field...` (a field chain)
+  vs a bare `name` (a variable). `parse_init`/`parse_init_item` recurse
+  for nested `{}` (the additional task); no parser generator, no
   regular expressions over the token list, no `eval`.
-- `checker.py` — Task 2: `SemanticChecker`, a walk of its own that runs
-  on the whole tree *before* any IR exists. The symbol table is now a
-  **stack of frames** (`self.scopes`), one pushed per `Block` and popped
-  on exit: a declaration is checked for a duplicate only in the top
-  frame (so an outer name may be shadowed with any type), a use walks
-  the frames from the top down. Decides the type of every expression and
-  stores it on the node (`node.type`), resolves every name to its
-  declaration (`node.decl`), and is the only place that rejects a
-  program: declared once *per block*, declared before use, `mut` before
-  `:=`, a `bool` condition for `if`/`while`, a `bool` under `!`, the
-  Practice 4 type rules — each with `line:column`.
-- `gen.py` — Task 3: `CodeGen`, a visitor that walks the *checked* tree
-  and drives the `llvmlite.ir` builder API. It trusts `node.type` /
-  `node.decl` and performs no checks of its own. A `Block` is a builder
-  *position*, not a scope — `self.ptrs` is keyed by `DeclNode` identity,
-  so shadowing costs nothing here either. An `if` becomes three basic
-  blocks (`then`/`else`/`merge`) and one `cbranch`; a `while` becomes
-  three (`while_cond`/`while_body`/`while_end`) with a branch back to
-  the condition block. Every `alloca` still goes to the function's
-  entry block (`builder.goto_entry_block()`), whichever block is current
-  when the declaration is met, so `opt -passes=mem2reg` can promote it.
-  Every basic block gets exactly one terminator; `exit` emits `printf`
-  and `ret` wherever the builder stands. The only IR text produced is
-  `str(module)`.
+- `checker.py` — Task 2/3: `SemanticChecker`, extended with two more
+  tables alongside the Practice 5 scope stack: `self.structs` (name ->
+  `StructNode`, field index/type/mut/order resolved here — *the
+  semantic pass finds the index*) and `self.functions` (name -> `FnNode`,
+  every signature collected before any body is checked, so a function
+  may call itself or one declared below it). Checking a function body
+  swaps `self.scopes` for a fresh stack holding only its parameters —
+  the body never sees the top-level variables. `resolve_chain` walks a
+  `.`-chain once for both a read (`visit_field`) and a write
+  (`visit_assign`), raising at the first non-mut link when the write
+  needs one; `is_fully_mut` recurses through a struct's fields (and
+  their struct fields) to decide whether `:=` may replace it whole.
+  `check_init` validates a decl's `{ ... }` field by field against the
+  struct (or the single value against a built-in type), recursing into
+  nested `{}`. Still the only place that rejects a program, with
+  `line:column`; `gen.py` reads `node.type`/`node.decl`/`node.indices`/
+  `node.fn` and looks nothing up by name itself.
+- `gen.py` — Task 1/2/3: `CodeGen`, now built once per function body
+  (and once for the top-level statements, which live in `main`) since
+  each function needs its own `builder`/`self.ptrs`. `is_top_level`
+  picks whether `exit` prints and returns 0 (the program ending) or
+  coerces its value to the function's result type and `ret`s it. A
+  field is reached with one `gep` whose index list is the chain
+  `resolve_chain` already resolved (`gep_chain`) — chaining the indices
+  in one instruction walks through nested structs without an
+  intermediate pointer. An object is an `alloca` of a named struct type;
+  a struct value passed by value, returned, or copied whole is loaded
+  from one `alloca` and stored into another (or passed/returned
+  directly — a first-class aggregate, no byref). A nested `{}` (the
+  additional task) builds one aggregate value bottom-up with chained
+  `insert_value`, never touching memory until the whole value is ready
+  to store. The only IR text produced is `str(module)`.
 - `compiler.py` — wires lexer -> parser -> `SemanticChecker` ->
-  `CodeGen` together and exposes the CLI (`--tokens`, `--ast`, or
-  compile to `.ll`).
+  `CodeGen` together. Builds every struct as a named identified type
+  (`module.context.get_identified_type(name).set_body(...)`) in
+  declaration order, so a later struct's fields already find their
+  type; declares every function's `ir.Function` (name prefixed `fn_` so
+  a program function called `main` or `printf` cannot clash with the
+  runtime) before generating any body, mirroring the checker's
+  signatures-then-bodies order; then generates each function's body and
+  finally `main`'s.
 - `tests/ok/`, `tests/err/` — programs that must compile and run, and
   programs that must fail to compile, each with its expected
   stdout/stderr next to it, plus a runner (`tests/run_tests.py`).
 
 ## Language
 
-One statement per line, three types: `i32` and `i64` are integers,
-`bool` is a boolean with literals `true`/`false`. `if`/`else`/`while`
-introduce blocks, which span several lines.
+One statement per line. Three built-in types (`i32`, `i64`, `bool`)
+plus `struct`s declared at the top of the file and `fn`s declared after
+them — a program is `{ struct } { fn } { statement } exit`, in that
+order, always.
 
 ```
-i32 mut a{10}
-bool b{true}
-if b
+struct Point
 {
-    a := a + 5
+    i32 mut x
+    i32 mut y
 }
-else
+struct Circle
 {
-    a := a - 5
+    Point center
+    i32 mut radius
 }
-bool c{!b}                     # ! negates a bool
-while a != 0
+
+fn moved := (Point p, i32 dx) -> Point
 {
-    a := a - 1
+    Point q{p.x + dx, p.y}
+    exit q
 }
-exit a                          # exit a | exit 42 | exit true — last line, exactly one
+
+Point p{10, 20}
+Circle c{p, 5}
+i32 xCoord{c.center.x}
+Point mut r{moved(p, 1)}
+r.x := r.x + 1
+exit r.x
 ```
 
-Rules:
-- `+ - *` work on integers only; the result has the wider of the two
-  types; `*` binds tighter, equal-precedence groups go left to right.
-- `==`/`!=` compare two integers (any mix of widths) or two bools and
-  produce a `bool`; one comparison per expression, binding weaker than
-  arithmetic. `!` negates a `bool` and binds to the single factor right
-  after it; `!a == b` compares `!a` with `b`.
-- An `i32` value may initialise or be assigned to an `i64` variable;
-  nothing else converts — an `i64` never narrows into an `i32`, a
-  `bool` never meets an integer.
-- A decimal constant gets the narrowest type it fits (`10` is `i32`,
-  `3000000000` is `i64`); a constant too large for `i64` is a
-  compile-time error.
-- `if cond` / `else` / `while cond` stand alone on their line; `{`/`}`
-  stand alone on theirs; `else` is optional on an `if`; a block holds
-  at least one statement or a trailing `exit`. Blocks nest: `if` and
-  `while` are statements, so one may stand inside another's block.
-- A block pushes its own scope frame: a name is declared once per
-  frame, before its first use within reach (the frames open at that
-  point), and only a `mut` variable may be assigned. A name declared in
-  an outer frame may be declared again inside a block with any type
-  (shadowing); it reverts to the outer declaration once the block ends.
-  Names are letters, digits and `_`, not starting with a digit; `i32`,
-  `i64`, `bool`, `mut`, `exit`, `true`, `false`, `if`, `else`, `while`
-  are reserved.
-- A block may end with `exit`, as its last line; nothing may follow an
-  `exit` in the same block (and nothing follows the program's last
-  `exit`, which is mandatory and always the final line).
-- Not in the language: parentheses; `/`, `<`, `>` or any operator other
-  than `+ - * == != !`; a single `=`; a sign in front of a constant or
-  a name; two comparisons in one expression; two statements on one
-  line; a declaration without `{}`; an `if`/`while` condition that
-  isn't `bool`; an empty block; `else` without a matching `if`.
+Rules on top of Practice 5 (if/else/while/blocks/scope frames/`!`,
+which are unchanged):
+
+- A struct field is a built-in type or a struct declared **above** it
+  (never itself, directly or through another struct); a field is
+  constant unless marked `mut`. An object is declared like a variable,
+  one value per field in order: `Point p{10, 20}`. A field that is
+  itself a struct takes a value of that type (a variable or a call) —
+  or, written inline, a nested `{}` built the same way, as deep as the
+  struct nests: `Circle c{{10, 20}, 5}`. One value of the struct's own
+  type copies the whole object: `Point q{p}`.
+- `x.y.z` reads a field chain; `x.y.z := e` writes through one. A write
+  needs **every** link mut — the variable and every field named on the
+  way — one non-mut link anywhere rejects it, even if the ends are mut.
+  Replacing a whole object with `:=` (no `.` chain) additionally needs
+  every field of its type, at every depth, to be mut — a struct with
+  even one non-mut field can never be replaced whole, only field by
+  field.
+- `fn name := (T1 p1, T2 p2) -> R { ... }` declares a function: any
+  number of parameters (built-in or struct), a result type (built-in
+  or struct). Parameters are copies, never reassignable; the body sees
+  only its own parameters and locals and every function of the program
+  (by name — a function may call itself or one declared below it),
+  never the top-level variables. The body is a block whose last line is
+  `exit`; inside a function `exit` ends the function with its value (the
+  function's result type, exactly or `i32`-into-`i64` widened); an
+  `exit` inside an `if` ends the function early. At the top level `exit`
+  still ends the program and its value must be a built-in type.
+- `name(a, b)` calls a function; the number and types of the arguments
+  must match the parameters (the same widening rule). A call is a
+  factor — it can stand wherever a field or a variable can — but never
+  alone as a statement.
+- Not in the language beyond Practice 5: grouping parentheses (`(`/`)`
+  exist only around a call's arguments or a function's parameters), a
+  struct inside a struct it doesn't own, a struct or a function
+  declared after a statement, a function or a struct nested inside a
+  function body, a `{}` written for a built-in field, a `{}` with the
+  wrong number of values.
 
 ## Running the compiler
 
@@ -134,7 +177,7 @@ On any error the compiler writes one line to stderr and exits non-zero,
 without writing the output file:
 
 ```
-compilation error: line 2:5: cannot initialise 'c' of type i32 with a value of type i64
+compilation error: line 7:6: 'Point' has no field 'z'
 ```
 
 ## Running the tests

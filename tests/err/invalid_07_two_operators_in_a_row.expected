@@ -1,1 +1,1 @@
-compilation error: line 1:11: expected a constant, 'true'/'false', a variable or '!', got '*'
+compilation error: line 1:11: expected a constant, 'true'/'false', a variable, a field, a call or '!', got '*'

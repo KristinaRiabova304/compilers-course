@@ -1,0 +1,12 @@
+fn f := () -> i32
+{
+    i32 x{1}
+    exit x
+}
+fn g := () -> i32
+{
+    i32 x{2}
+    exit x
+}
+i32 r{f() + g()}
+exit r

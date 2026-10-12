@@ -16,11 +16,27 @@ def parse(data: bytes):
 
 
 def compile_program(program):
-    SemanticChecker().check(program)
+    checker = SemanticChecker()
+    checker.check(program)
 
-    module = ir.Module(name="practice5")
+    module = ir.Module(name="practice6")
     module.triple = llvm.get_default_triple()
     i32, i64, i1, i8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
+
+    ir_types = {"i32": i32, "i64": i64, "bool": i1}
+    for struct in program.structs:  # declared-above order, so every field type is already in here
+        struct_ty = ir.global_context.get_identified_type(struct.name)
+        struct_ty.set_body(*(ir_types[field_type] for field_type in
+                              (struct.field_type[name] for name in struct.field_order)))
+        ir_types[struct.name] = struct_ty
+
+    # first collect every function's signature as an ir.Function, so a call
+    # to a function declared below (or to itself) finds it already made
+    fn_ir = {}
+    for fn in program.fns:
+        param_types = [ir_types[p.type_name] for p in fn.param_decls]
+        fn_ty = ir.FunctionType(ir_types[fn.result_type], param_types)
+        fn_ir[fn] = ir.Function(module, fn_ty, name=f"fn_{fn.name}")
 
     main_ty = ir.FunctionType(i32, [])
     main_fn = ir.Function(module, main_ty, name="main")
@@ -41,8 +57,21 @@ def compile_program(program):
     str_true = string_const("str_true", "true")
     str_false = string_const("str_false", "false")
 
-    gen = CodeGen(builder, printf, fmt_int, fmt_bool, str_true, str_false, i32, i64, i1)
+    gen = CodeGen(builder, ir_types, checker.structs, fn_ir, i32, i64, i1, is_top_level=True,
+                  printf=printf, fmt_int=fmt_int, fmt_bool=fmt_bool,
+                  str_true=str_true, str_false=str_false)
     program.accept(gen)
+
+    for fn in program.fns:
+        fn_builder = ir.IRBuilder(fn_ir[fn].append_basic_block("entry"))
+        fn_gen = CodeGen(fn_builder, ir_types, checker.structs, fn_ir, i32, i64, i1,
+                          is_top_level=False, result_type=fn.result_type)
+        for param_decl, arg in zip(fn.param_decls, fn_ir[fn].args):
+            ptr = fn_builder.alloca(ir_types[param_decl.type_name], name=param_decl.name)
+            fn_builder.store(arg, ptr)
+            fn_gen.ptrs[param_decl] = ptr
+        fn.body.accept(fn_gen)
+
     return module
 
 

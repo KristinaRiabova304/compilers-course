@@ -1,15 +1,20 @@
-Practice 5 grammar (EBNF): if/else, while, blocks, ! on top of the
-Practice 4 language (three types, comparisons, a semantic pass).
+Practice 6 grammar (EBNF): structs, functions, field access and calls on
+top of the Practice 5 language (if/else, while, blocks, !).
 
 Notation: | alternatives, [ x ] optional, { x } zero or more,
 "quoted" terminals are token kinds the lexer emits verbatim,
 unquoted names are non-terminals with a rule below.
 
-program    ::= { statement } exit_stmt
+program    ::= { struct } { fn } { statement } exit_stmt
+struct     ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+field_decl ::= type [ "mut" ] ident NL
+fn         ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")"
+               "->" type NL block
 statement  ::= decl | assign | if | while
-decl       ::= type [ "mut" ] ident "{" expr "}"
-type       ::= "i32" | "i64" | "bool"
-assign     ::= ident ":=" expr
+decl       ::= type [ "mut" ] ident "{" init_value { "," init_value } "}"
+init_value ::= expr | "{" init_value { "," init_value } "}"
+type       ::= "i32" | "i64" | "bool" | ident
+assign     ::= ident { "." ident } ":=" expr
 if         ::= "if" expr NL block [ "else" NL block ]
 while      ::= "while" expr NL block
 block      ::= "{" NL { statement } [ exit_stmt NL ] "}" NL   (not empty)
@@ -17,36 +22,70 @@ exit_stmt  ::= "exit" factor
 expr       ::= arith [ ( "==" | "!=" ) arith ]
 arith      ::= term { ( "+" | "-" ) term }
 term       ::= factor { "*" factor }
-factor     ::= number | "true" | "false" | ident | "!" factor
+factor     ::= number | "true" | "false" | ident | field | call | "!" factor
+field      ::= ident "." ident { "." ident }
+call       ::= ident "(" [ expr { "," expr } ] ")"
 
 Terminals ident and number come from the lexer as "identifier" and
 "constant" tokens; how they are spelled is the lexer's rule, not the
-grammar's. "i32", "i64", "bool", "mut", "exit", "true", "false", "if",
-"else", "while" are the lexer's keywords, "{"/"}" block tokens, "==" /
-"!=" / "!" / ":=" operator tokens, "+" "-" "*" single-byte operator
-tokens, used here with the text they carry. NL is the end of a line:
-one statement is one line, except if/while/block, which are several -
-the parser keeps a line cursor next to its token cursor for exactly
-this reason.
+grammar's. "struct", "fn", "i32", "i64", "bool", "mut", "exit", "true",
+"false", "if", "else", "while" are the lexer's keywords, "{"/"}" block
+tokens, "("/")" their own token kind (so a call's parentheses never read
+as a block), ":="/"->"/"=="/"!="/"!"/"."/"," operator tokens, "+"/"-"/"*"
+single-byte operator tokens, used here with the text they carry. NL is
+the end of a line: one statement is one line, except if/while/struct/
+fn/block, which are several - the parser keeps a line cursor next to
+its token cursor for exactly this reason.
 
-One statement per line inside a block the same way as at the top
-level; blank lines carry no tokens and are skipped before this grammar
-ever sees them. exit_stmt is the last line of whatever block it is in,
-and there is at most one per block (exactly one for the program); it
-takes only a factor (a constant, a boolean literal, a variable or a
-'!'-chain), never a +/-/* or a comparison.
+A struct's type is a built-in type or an ident naming a struct declared
+above it; the grammar does not distinguish a struct type from any other
+ident - that a given name was actually declared, and what it names, is
+semantics, not syntax (the parser dispatches a line starting with ident
+ident... to decl the same way it dispatches "i32 x..."). Likewise a
+field/call's ident is any identifier; whether it resolves to a known
+function or a known field of the right type is checker.py's job.
+
+init_value's recursion ("{" init_value { "," init_value } "}" standing
+in for a single value) is the additional task: a struct field's value
+may itself be written as a brace list instead of a variable or a call,
+built field by field, nested as deep as the struct nests. decl's own
+outer "{" ... "}" is the same rule one level up - a decl is just an
+init_value with a name and a type in front of it.
+
+exit_stmt still takes one operand: a constant, a variable, a field
+chain or a call, never an operation - "exit" calls parse_factor, not
+parse_expr, exactly as in Practice 5. A call alone, with no "exit" and
+no ":=" catching its result, is not a statement; the field/call
+alternatives of factor cover every other place a value is needed.
 
 Semantics the grammar cannot express live in checker.py, not here:
-- a stack of scope frames, one per block: a name is declared once per
-  frame (shadowing an outer frame is fine, with any type), resolved by
-  walking frames from the innermost out, and only a mut variable is
-  assigned (Practice 3/4, now per-frame instead of one flat table);
-- the type of every expression: + - * take two integers and widen to
-  the wider type; == != take two integers (any mix) or two bools and
-  produce a bool; ! takes a bool and produces a bool; the condition of
-  if/while must be bool; an i32 value may widen into an i64, nothing
-  else converts; a decimal constant gets the narrowest type it fits.
-That * binds tighter than + and - is not semantics: it falls out of
-the shape of arith/term/factor and needs no rule of its own. That ! is
-the only prefix operator and binds to the single factor right after it
-is likewise the shape of factor, not a semantic rule.
+- a stack of scope frames, one per block (Practice 5), now swapped for
+  a fresh one holding just the parameters when checking a function body
+  - the body sees its own parameters and locals and every function of
+  the program (by name, regardless of declaration order - signatures
+  are all collected before any body is checked), never the top-level
+  variables;
+- a struct's fields are checked against the structs declared strictly
+  above it, so a struct can never contain itself, directly or through
+  another struct - this falls out of the ordering, not a separate
+  occurs-check;
+- a decl/call's values and arguments are checked field by field /
+  parameter by parameter against the type they fill, with the same
+  i32-into-i64 widening rule as Practice 4, and a single value of a
+  struct's own type copies the whole object instead of filling its
+  first field;
+- a field is constant unless its declaration says mut; "x.y.z := e"
+  needs x itself mut and every field named on the way (y, z) mut - one
+  missing mut anywhere on the chain rejects the whole assignment, even
+  if the variable and the final field are both mut; replacing a whole
+  object with ":=" additionally needs every field of its type, at
+  every depth, to be mut (a single non-mut field blocks ":=" on the
+  whole object even when the variable holding it is mut);
+- inside a function exit's value must match the function's declared
+  result type (with the same widening rule); at the top level it still
+  has no target type to match, only the rule that it must be built-in,
+  never a struct.
+That a call's arguments are evaluated left to right, and that an inner
+"{}" is built depth-first before the object that holds it, is not
+semantics either: it falls out of a single recursive-descent walk, the
+same way operator precedence did in Practice 4/5.

@@ -1,29 +1,44 @@
-"""Task 3: code generation from a checked tree.
+"""Task 1/2/3 (Practice 6): code generation from a checked tree, now with
+structs, functions, field access and calls on top of the Practice 5 walk.
 
 The SemanticChecker has already run: every expression node carries
-node.type, every VarNode/AssignNode carries node.decl. This walk looks
-nothing up and raises nothing - it only builds llvmlite.ir instructions,
-widening with sext at exactly the five places the checker allowed it.
+node.type, a VarNode/FieldNode carries node.decl (and a FieldNode/AssignNode
+node.indices, the gep index chain the checker found by name so this walk
+never looks a field up by name), a CallNode carries node.fn. This walk
+looks nothing up and raises nothing.
 
-A Block is a builder position, not a scope: ptrs is keyed by DeclNode
-object identity, so two shadowing declarations get two slots without the
-generator ever comparing names. An If/While is basic blocks and a
-cbranch; every alloca still goes to the function's entry block (via
-builder.goto_entry_block()) regardless of which block is current when the
-declaration is met, so mem2reg can promote it later.
+One CodeGen instance is built per function body (and one for the
+top-level statements, which live in main): is_top_level picks whether
+'exit' prints and returns 0 (the program ending) or just coerces its
+value to the function's declared result type and returns it (ret, maybe
+of a struct value returned by insertvalue/call - first-class aggregates,
+no pointer indirection). self.ptrs is keyed by DeclNode/ParamNode
+identity, same as Practice 5, now scoped to one function's allocas since
+each function gets its own CodeGen/self.ptrs. Every alloca still goes to
+the function's entry block (via builder.goto_entry_block()) so mem2reg
+can promote it later. Nested '{}' (the additional task) builds one struct
+value with chained insertvalue, bottom up, before a single store.
 """
 from llvmlite import ir
 
+from ast_nodes import InitNode
+
 
 class CodeGen:
-    def __init__(self, builder, printf, fmt_int, fmt_bool, str_true, str_false, i32, i64, i1):
+    def __init__(self, builder, ir_types, structs, fn_ir, i32, i64, i1,
+                 is_top_level, result_type=None,
+                 printf=None, fmt_int=None, fmt_bool=None, str_true=None, str_false=None):
         self.builder = builder
+        self.ir_types = ir_types    # type name -> ir type, builtins + every struct
+        self.structs = structs      # struct name -> StructNode (field_order/field_type)
+        self.fn_ir = fn_ir          # FnNode -> ir.Function
+        self.i32, self.i64, self.i1 = i32, i64, i1
+        self.is_top_level = is_top_level
+        self.result_type = result_type    # this function's declared result type, if not top level
         self.printf = printf
         self.fmt_int, self.fmt_bool = fmt_int, fmt_bool
         self.str_true, self.str_false = str_true, str_false
-        self.i32, self.i64, self.i1 = i32, i64, i1
-        self.ir_types = {"i32": i32, "i64": i64, "bool": i1}
-        self.ptrs = {}  # DeclNode -> alloca ptr
+        self.ptrs = {}  # DeclNode/ParamNode -> alloca ptr
 
     def ir_type(self, type_name):
         return self.ir_types[type_name]
@@ -32,6 +47,16 @@ class CodeGen:
         if have == "i32" and want == "i64":
             return self.builder.sext(value, self.i64, name="wide")
         return value
+
+    def gep_chain(self, base_ptr, indices):
+        """indices is a chain of struct field indices (the checker found
+        them by name); every field lives embedded by value in its
+        container, so one gep with a leading 0 (deref the pointer) and
+        then one index per link reaches it, nested or not."""
+        if not indices:
+            return base_ptr
+        idx = [ir.Constant(self.i32, 0)] + [ir.Constant(self.i32, i) for i in indices]
+        return self.builder.gep(base_ptr, idx, inbounds=True, name="field")
 
     def visit_program(self, node):
         for stmt in node.statements:
@@ -84,9 +109,33 @@ class CodeGen:
 
         self.builder.position_at_end(end_bb)
 
+    def gen_init_value(self, init, type_name):
+        """Builds the ir.Value an InitNode denotes (never a pointer): for a
+        built-in type, its one coerced expression; for a struct, either
+        the whole-copy expression as is, or a fresh aggregate built field
+        by field with insertvalue, recursing into nested '{}'."""
+        if type_name in ("i32", "i64", "bool"):
+            item = init.items[0]
+            value = item.accept(self)
+            return self.coerce(value, item.type, type_name)
+
+        if init.whole_copy:
+            return init.items[0].accept(self)
+
+        struct = self.structs[type_name]
+        value = ir.Constant(self.ir_type(type_name), ir.Undefined)
+        for idx, (item, field_name) in enumerate(zip(init.items, struct.field_order)):
+            field_type = struct.field_type[field_name]
+            if isinstance(item, InitNode):
+                field_value = self.gen_init_value(item, field_type)
+            else:
+                field_value = self.coerce(item.accept(self), item.type, field_type)
+            value = self.builder.insert_value(value, field_value, idx,
+                                               name=f"{type_name}.{field_name}")
+        return value
+
     def visit_decl(self, node):
-        value = node.init.accept(self)
-        value = self.coerce(value, node.init.type, node.type_name)
+        value = self.gen_init_value(node.init, node.type_name)
         with self.builder.goto_entry_block():
             ptr = self.builder.alloca(self.ir_type(node.type_name), name=node.name)
         self.builder.store(value, ptr)
@@ -94,18 +143,23 @@ class CodeGen:
 
     def visit_assign(self, node):
         value = node.value.accept(self)
-        value = self.coerce(value, node.value.type, node.decl.type_name)
-        self.builder.store(value, self.ptrs[node.decl])
+        value = self.coerce(value, node.value.type, node.type)
+        ptr = self.gep_chain(self.ptrs[node.decl], node.indices)
+        self.builder.store(value, ptr)
 
     def visit_exit(self, node):
         value = node.value.accept(self)
-        if node.value.type == "bool":
-            chosen = self.builder.select(value, self.str_true, self.str_false, name="exit_str")
-            self.builder.call(self.printf, [self.fmt_bool, chosen])
+        if self.is_top_level:
+            if node.value.type == "bool":
+                chosen = self.builder.select(value, self.str_true, self.str_false, name="exit_str")
+                self.builder.call(self.printf, [self.fmt_bool, chosen])
+            else:
+                value = self.coerce(value, node.value.type, "i64")
+                self.builder.call(self.printf, [self.fmt_int, value])
+            self.builder.ret(ir.Constant(self.i32, 0))
         else:
-            value = self.coerce(value, node.value.type, "i64")
-            self.builder.call(self.printf, [self.fmt_int, value])
-        self.builder.ret(ir.Constant(self.i32, 0))
+            value = self.coerce(value, node.value.type, self.result_type)
+            self.builder.ret(value)
 
     def visit_binop(self, node):
         lv, rv = node.left.accept(self), node.right.accept(self)
@@ -130,6 +184,17 @@ class CodeGen:
 
     def visit_var(self, node):
         return self.builder.load(self.ptrs[node.decl])
+
+    def visit_field(self, node):
+        ptr = self.gep_chain(self.ptrs[node.decl], node.indices)
+        return self.builder.load(ptr)
+
+    def visit_call(self, node):
+        args = []
+        for arg, param_decl in zip(node.args, node.fn.param_decls):
+            value = arg.accept(self)
+            args.append(self.coerce(value, arg.type, param_decl.type_name))
+        return self.builder.call(self.fn_ir[node.fn], args, name="call")
 
     def visit_const(self, node):
         return ir.Constant(self.ir_type(node.type), node.value)
