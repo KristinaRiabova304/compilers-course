@@ -1,0 +1,11 @@
+fn add := (i32 a, i32 b) -> i32
+{
+    i32 s{a + b}
+    exit s
+}
+fn double := (i32 x) -> i32
+{
+    i32 d{x * 2}
+    exit d
+}
+exit add(double(3), add(1, double(2)))
