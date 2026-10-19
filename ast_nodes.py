@@ -25,17 +25,21 @@ class ProgramNode(Node):
 
 class StructNode(Node):
     """fields: list of (type_name, mutable, name, line, col) in declaration
-    order; line/col point at the field's type token."""
+    order; line/col point at the field's type token. fns: list of
+    MemberFnNode, in declaration order, every one of them after every
+    field."""
 
-    def __init__(self, line, col, name, fields):
+    def __init__(self, line, col, name, fields, fns):
         super().__init__(line, col)
-        self.name, self.fields = name, fields
+        self.name, self.fields, self.fns = name, fields, fns
 
     def dump(self, indent=0):
         print("  " * indent + f"Struct {self.name}")
         for type_name, mutable, name, _line, _col in self.fields:
             print("  " * (indent + 1)
-                  + f"Field {name} {type_name} {'mut' if mutable else 'const'}")
+                  + f"Member {name} {type_name} {'mut' if mutable else 'const'}")
+        for fn in self.fns:
+            fn.dump(indent + 1)
 
 
 class FnNode(Node):
@@ -48,6 +52,23 @@ class FnNode(Node):
     def dump(self, indent=0):
         params = ", ".join(f"{t} {n}" for t, n, _line, _col in self.params)
         print("  " * indent + f"Fn {self.name}({params}) -> {self.result_type}")
+        self.body.dump(indent + 1)
+
+
+class MemberFnNode(Node):
+    """A struct's own fn: same shape as FnNode (params/result_type/body),
+    held on StructNode.fns instead of Program.fns. Its body implicitly
+    sees the struct's own fields by their bare name - the receiver, passed
+    by pointer so a field write through it is visible to the caller."""
+
+    def __init__(self, line, col, name, params, result_type, body):
+        super().__init__(line, col)
+        self.name, self.params, self.result_type, self.body = name, params, result_type, body
+
+    def dump(self, indent=0):
+        print("  " * indent + f"MemberFn {self.name} -> {self.result_type}")
+        for type_name, name, _line, _col in self.params:
+            print("  " * (indent + 1) + f"Param {name} {type_name}")
         self.body.dump(indent + 1)
 
 
@@ -113,6 +134,35 @@ class AssignNode(StmtNode):
         chain = ".".join([self.name, *self.fields])
         print("  " * indent + f"Assign {chain}")
         self.value.dump(indent + 1)
+
+
+class StringNode(Node):
+    """A string literal: only ever print's argument, never a factor, so it
+    has no accept() - visit_print reads node.arg.value directly instead of
+    walking it through the expression visitor."""
+
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value
+
+    def dump(self, indent=0):
+        print("  " * indent + f'String "{self.value}"')
+
+
+class PrintNode(StmtNode):
+    """print(arg): a statement, not a factor - it has no value. arg is a
+    StringNode or any ExprNode."""
+
+    def __init__(self, line, col, arg):
+        super().__init__(line, col)
+        self.arg = arg
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + "Print")
+        self.arg.dump(indent + 1)
 
 
 class ExitNode(Node):
@@ -222,6 +272,26 @@ class FieldNode(ExprNode):
         print("  " * indent + f"Field {'.'.join([self.name, *self.fields])}")
 
 
+class ChainFieldNode(ExprNode):
+    """base.field - the additional task, a '.' after a call whose result
+    is a struct: base is itself an expression (a CallNode, a
+    MemberCallNode or another ChainFieldNode), never a named variable -
+    FieldNode already covers that case. Read via extractvalue in gen.py,
+    not gep: base is a temporary value, there is nothing to take the
+    address of."""
+
+    def __init__(self, line, col, base, field):
+        super().__init__(line, col)
+        self.base, self.field = base, field
+
+    def accept(self, visitor):
+        return visitor.visit_chain_field(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + f"ChainField {self.field}")
+        self.base.dump(indent + 1)
+
+
 class CallNode(ExprNode):
     def __init__(self, line, col, name, args):
         super().__init__(line, col)
@@ -232,6 +302,25 @@ class CallNode(ExprNode):
 
     def dump(self, indent=0):
         print("  " * indent + f"Call {self.name}")
+        for arg in self.args:
+            arg.dump(indent + 1)
+
+
+class MemberCallNode(ExprNode):
+    """obj.name(args): obj is the receiver expression (a VarNode or a
+    FieldNode), name is the member function called on it. The call ends
+    the chain - nothing can follow its ')'."""
+
+    def __init__(self, line, col, name, obj, args):
+        super().__init__(line, col)
+        self.name, self.obj, self.args = name, obj, args
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + f"MemberCall {self.name}")
+        self.obj.dump(indent + 1)
         for arg in self.args:
             arg.dump(indent + 1)
 

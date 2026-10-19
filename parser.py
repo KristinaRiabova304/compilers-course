@@ -1,7 +1,7 @@
 from ast_nodes import (
-    AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode, DeclNode,
-    ExitNode, FieldNode, FnNode, IfNode, InitNode, NotNode, ProgramNode,
-    StructNode, VarNode, WhileNode,
+    AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ChainFieldNode, ConstNode,
+    DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, MemberCallNode, MemberFnNode,
+    NotNode, PrintNode, ProgramNode, StringNode, StructNode, VarNode, WhileNode,
 )
 from lexer import CompileError
 
@@ -115,7 +115,7 @@ class Parser:
         self.eat()
         self.end_of_line()
 
-        fields = []
+        fields, fns = [], []
         while True:
             line = self.peek_line()
             if line is None:
@@ -126,13 +126,21 @@ class Parser:
                 self.eat()
                 self.end_of_line()
                 break
+            if first.kind == "keyword" and first.sub == "fn":
+                if not fields:
+                    raise self.error("a struct needs at least one field before "
+                                      "its first member function", first)
+                fns.append(self.parse_member_fn())
+                continue
+            if fns:
+                raise self.error("a field cannot be declared after a member function", first)
             fields.append(self.parse_field_decl())
 
         if not fields:
             raise CompileError(struct_tok.line, struct_tok.col,
                                 f"struct '{name_tok.text}' has no fields")
 
-        return StructNode(struct_tok.line, struct_tok.col, name_tok.text, fields)
+        return StructNode(struct_tok.line, struct_tok.col, name_tok.text, fields, fns)
 
     def parse_field_decl(self):
         type_tok = self.peek()
@@ -158,6 +166,18 @@ class Parser:
 
     def parse_fn(self):
         fn_tok = self.eat()  # 'fn'
+        name_tok, params, result_type, body = self.parse_fn_rest()
+        return FnNode(fn_tok.line, fn_tok.col, name_tok.text, params, result_type, body)
+
+    def parse_member_fn(self):
+        fn_tok = self.eat()  # 'fn'
+        name_tok, params, result_type, body = self.parse_fn_rest()
+        return MemberFnNode(fn_tok.line, fn_tok.col, name_tok.text, params, result_type, body)
+
+    def parse_fn_rest(self):
+        """Everything after the leading 'fn' token, shared by a top-level
+        fn and a struct's member fn: name, ':=', '(' params ')', '->'
+        result, block. Returns (name_tok, params, result_type, body)."""
         name_tok = self.peek()
         if name_tok is None or name_tok.kind != "identifier":
             raise self.error("expected a function name", name_tok)
@@ -205,7 +225,7 @@ class Parser:
         self.end_of_line()
 
         body = self.parse_block(f"fn {name_tok.text}")
-        return FnNode(fn_tok.line, fn_tok.col, name_tok.text, params, result_type, body)
+        return name_tok, params, result_type, body
 
     def parse_param(self):
         type_tok = self.peek()
@@ -228,9 +248,9 @@ class Parser:
             self.end_of_line()
             return node
         if first.kind == "identifier":
-            second = self.peek_next()
-            if second is not None and second.kind == "paren" and second.sub == "start":
+            if self.looks_like_a_call():
                 raise self.error("a call cannot stand alone as a statement", first)
+            second = self.peek_next()
             if second is not None and (second.kind == "identifier"
                                         or (second.kind == "keyword"
                                             and second.sub == "specifier")):
@@ -243,7 +263,53 @@ class Parser:
             return self.parse_if()
         if first.kind == "keyword" and first.sub == "while":
             return self.parse_while()
+        if first.kind == "keyword" and first.sub == "print":
+            node = self.parse_print()
+            self.end_of_line()
+            return node
         raise self.error(f"cannot start a statement with '{first.text}'", first)
+
+    def parse_print(self):
+        print_tok = self.eat()  # 'print'
+        open_paren = self.peek()
+        if open_paren is None or not (open_paren.kind == "paren" and open_paren.sub == "start"):
+            got = open_paren.text if open_paren is not None else "end of line"
+            raise self.error(f"expected '(' after 'print', got '{got}'", open_paren)
+        self.eat()
+
+        tok = self.peek()
+        if tok is not None and tok.kind == "paren" and tok.sub == "end":
+            raise self.error("'print' needs an argument", tok)
+        if tok is not None and tok.kind == "string":
+            self.eat()
+            arg = StringNode(tok.line, tok.col, tok.text)
+        else:
+            arg = self.parse_expr()
+
+        tok = self.peek()
+        if tok is not None and tok.kind == "operator" and tok.text == ",":
+            raise self.error("'print' takes exactly one argument", tok)
+        close = self.peek()
+        if close is None or not (close.kind == "paren" and close.sub == "end"):
+            got = close.text if close is not None else "end of line"
+            raise self.error(f"expected ')' to close 'print', got '{got}'", close)
+        self.eat()
+        return PrintNode(print_tok.line, print_tok.col, arg)
+
+    def looks_like_a_call(self):
+        """True if, without consuming anything, the current line reads
+        ident { '.' ident } '(' - a call or a member call. Used only to
+        reject it as a standalone statement with one clear message,
+        before parse_assign gets a confusing-looking '(' where ':=' was
+        expected."""
+        i = self.pos
+        if not (i < len(self.toks) and self.toks[i].kind == "identifier"):
+            return False
+        i += 1
+        while (i + 1 < len(self.toks) and self.toks[i].kind == "operator"
+               and self.toks[i].text == "." and self.toks[i + 1].kind == "identifier"):
+            i += 2
+        return i < len(self.toks) and self.toks[i].kind == "paren" and self.toks[i].sub == "start"
 
     def parse_dot_fields(self):
         """Consumes zero or more '.' ident, returns the list of field names."""
@@ -436,6 +502,8 @@ class Parser:
         if tok.kind == "operator" and tok.text == "!":
             self.eat()
             return NotNode(tok.line, tok.col, self.parse_factor())
+        if tok.kind == "string":
+            raise self.error("a string literal is only allowed as the argument of 'print'", tok)
         if tok.kind == "constant":
             self.eat()
             return ConstNode(tok.line, tok.col, int(tok.text))
@@ -446,8 +514,22 @@ class Parser:
             self.eat()
             nxt = self.peek()
             if nxt is not None and nxt.kind == "paren" and nxt.sub == "start":
-                return self.parse_call(tok)
-            fields = self.parse_dot_fields()
+                return self.parse_chain_tail(self.parse_call(tok))
+            fields = []
+            while True:
+                dot = self.peek()
+                if dot is None or not (dot.kind == "operator" and dot.text == "."):
+                    break
+                self.eat()
+                field_tok = self.peek()
+                if field_tok is None or field_tok.kind != "identifier":
+                    got = field_tok.text if field_tok is not None else "end of line"
+                    raise self.error(f"expected a field name after '.', got '{got}'", field_tok)
+                self.eat()
+                after = self.peek()
+                if after is not None and after.kind == "paren" and after.sub == "start":
+                    return self.parse_chain_tail(self.parse_member_call(tok, fields, field_tok))
+                fields.append(field_tok.text)
             if fields:
                 return FieldNode(tok.line, tok.col, tok.text, fields)
             return VarNode(tok.line, tok.col, tok.text)
@@ -456,6 +538,52 @@ class Parser:
 
     def parse_call(self, name_tok):
         self.eat()  # '('
+        args = self.parse_call_args()
+        return CallNode(name_tok.line, name_tok.col, name_tok.text, args)
+
+    def parse_member_call(self, base_tok, fields, name_tok):
+        """base_tok.fields... already consumed up to (not including) the
+        final '.', name_tok is the member function right before the '('."""
+        if fields:
+            obj = FieldNode(base_tok.line, base_tok.col, base_tok.text, fields)
+        else:
+            obj = VarNode(base_tok.line, base_tok.col, base_tok.text)
+        self.eat()  # '('
+        args = self.parse_call_args()
+        return MemberCallNode(name_tok.line, name_tok.col, name_tok.text, obj, args)
+
+    def parse_chain_tail(self, node):
+        """The additional task: node is a call or member call (or another
+        chain step already built by this same loop) whose result can
+        itself be chained further - '.' field reads a field of that
+        temporary (ChainFieldNode, extractvalue, not gep: there is no
+        variable to take the address of), '.' name '(' calls a member
+        function on it (another MemberCallNode, its obj a temporary this
+        time instead of a VarNode/FieldNode). Whether the result is
+        actually a struct (so this is legal at all) is checker.py's job,
+        not the parser's - this only ever stops at the first token that
+        isn't '.'."""
+        while True:
+            dot = self.peek()
+            if dot is None or not (dot.kind == "operator" and dot.text == "."):
+                return node
+            dot_tok = self.eat()
+            name_tok = self.peek()
+            if name_tok is None or name_tok.kind != "identifier":
+                got = name_tok.text if name_tok is not None else "end of line"
+                raise self.error(f"expected a field or member function name after "
+                                  f"'.', got '{got}'", name_tok)
+            self.eat()
+            after = self.peek()
+            if after is not None and after.kind == "paren" and after.sub == "start":
+                self.eat()  # '('
+                args = self.parse_call_args()
+                node = MemberCallNode(name_tok.line, name_tok.col, name_tok.text, node, args)
+            else:
+                node = ChainFieldNode(dot_tok.line, dot_tok.col, node, name_tok.text)
+
+    def parse_call_args(self):
+        """'(' is already consumed; reads [ expr { ',' expr } ] ')'."""
         args = []
         tok = self.peek()
         if tok is not None and not (tok.kind == "paren" and tok.sub == "end"):
@@ -471,4 +599,4 @@ class Parser:
         if close is None or not (close.kind == "paren" and close.sub == "end"):
             raise self.error("expected ')' to close the call", close)
         self.eat()
-        return CallNode(name_tok.line, name_tok.col, name_tok.text, args)
+        return args

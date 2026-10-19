@@ -30,6 +30,7 @@ KEYWORDS = {
     "while": ("keyword", "while"),
     "struct": ("keyword", "struct"),
     "fn": ("keyword", "fn"),
+    "print": ("keyword", "print"),
 }
 
 # '-' is not here: it needs one byte of lookahead to tell '-' from '->'.
@@ -105,6 +106,8 @@ def lex(data: bytes):
                 state, start_i, start_line, start_col = "BANG", i, line, col
             elif b == ord("-"):
                 state, start_i, start_line, start_col = "MINUS", i, line, col
+            elif b == ord('"'):
+                state, start_i, start_line, start_col = "STRING", i, line, col
             else:
                 ch = chr(b) if 32 <= b < 127 else f"\\x{b:02x}"
                 raise CompileError(line, col, f"unexpected byte '{ch}'")
@@ -164,6 +167,15 @@ def lex(data: bytes):
                 tokens.append(Token("operator", None, "-", start_line, start_col))
                 state = "START"
                 continue  # re-read this byte in START
+
+        elif state == "STRING":
+            if b is None or b == 10:  # end of file or \n: no closing '"' on this line
+                raise CompileError(start_line, start_col, "string literal is not closed on its line")
+            elif b == ord('"'):
+                text = data[start_i + 1:i].decode("latin1")  # no escapes: any byte goes through as is
+                tokens.append(Token("string", None, text, start_line, start_col))
+                state = "START"
+            # else: any other byte is part of the literal, stay in STRING
 
         i += 1
         col += 1

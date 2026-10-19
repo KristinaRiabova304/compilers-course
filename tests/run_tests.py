@@ -14,8 +14,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
 
 
-def run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+def run(cmd, stdin_text=None):
+    return subprocess.run(cmd, capture_output=True, text=True, input=stdin_text)
 
 
 def check_ok(src: pathlib.Path, expected: str) -> str | None:
@@ -31,7 +31,9 @@ def check_ok(src: pathlib.Path, expected: str) -> str | None:
         if dumped.stdout.strip() != want_ast:
             return f"--ast: expected {want_ast!r}, got {dumped.stdout.strip()!r}"
 
-    ran = run(["lli", str(ll_path)])
+    in_path = src.with_suffix(".in")
+    stdin_text = in_path.read_text() if in_path.exists() else None
+    ran = run(["lli", str(ll_path)], stdin_text=stdin_text)
     ll_path.unlink(missing_ok=True)
     if ran.returncode != 0:
         return f"lli exited {ran.returncode}: {ran.stderr.strip()}"

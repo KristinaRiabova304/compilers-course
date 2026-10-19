@@ -1,44 +1,57 @@
-"""Task 1/2/3 (Practice 6): code generation from a checked tree, now with
-structs, functions, field access and calls on top of the Practice 5 walk.
+"""Task 1/2/3 (Practice 7): code generation for member functions, member
+calls, read() and print() on top of the Practice 6 walk (structs,
+functions, field access, calls).
 
 The SemanticChecker has already run: every expression node carries
-node.type, a VarNode/FieldNode carries node.decl (and a FieldNode/AssignNode
-node.indices, the gep index chain the checker found by name so this walk
-never looks a field up by name), a CallNode carries node.fn. This walk
-looks nothing up and raises nothing.
+node.type, a VarNode/FieldNode carries node.decl and node.indices (the gep
+index chain the checker found by name so this walk never looks a field up
+by name - empty for a plain local/param, non-empty for a field access and
+also for an implicit self field inside a member function), a
+CallNode/MemberCallNode carries node.fn (None for the read() builtin,
+checked by name once in the checker, not here). This walk looks nothing
+up and raises nothing.
 
-One CodeGen instance is built per function body (and one for the
-top-level statements, which live in main): is_top_level picks whether
-'exit' prints and returns 0 (the program ending) or just coerces its
-value to the function's declared result type and returns it (ret, maybe
-of a struct value returned by insertvalue/call - first-class aggregates,
-no pointer indirection). self.ptrs is keyed by DeclNode/ParamNode
-identity, same as Practice 5, now scoped to one function's allocas since
-each function gets its own CodeGen/self.ptrs. Every alloca still goes to
-the function's entry block (via builder.goto_entry_block()) so mem2reg
-can promote it later. Nested '{}' (the additional task) builds one struct
-value with chained insertvalue, bottom up, before a single store.
+One CodeGen instance is built per function or member function body (and
+one for the top-level statements, which live in main): is_top_level picks
+whether 'exit' prints and returns 0 (the program ending) or just coerces
+its value to the function's declared result type and returns it. A member
+function's self.ptrs maps its MemberFnNode to the receiver pointer itself
+(compiler.py's extra, leading argument) rather than to an alloca - every
+other key (a ParamNode, or a plain fn's own MemberFnNode-less DeclNode)
+still maps to an alloca, so gep_chain treats both the same way: one gep
+with a leading 0 and then the index chain. Every alloca still goes to the
+function's entry block (via builder.goto_entry_block()) so mem2reg can
+promote it later. Nested '{}' builds one struct value with chained
+insertvalue, bottom up, before a single store.
+
+rt bundles everything shared module-wide (module, i8, printf, scanf, the
+format/bool-string globals, a counter for unique string-literal global
+names) - print can appear inside any function, not just the top level, so
+every CodeGen instance needs it, not just the one for main. Globals are
+created once (in compiler.py, or lazily here for a print's own text) but
+never pre-bitcast to i8*: a bitcast is an instruction, and an instruction
+from one function's entry block cannot be reused as a value in another
+function, so every use of a global here goes through as_ptr/literal_ptr,
+bitcasting fresh in the current builder each time.
 """
 from llvmlite import ir
 
-from ast_nodes import InitNode
+from ast_nodes import InitNode, StringNode
 
 
 class CodeGen:
-    def __init__(self, builder, ir_types, structs, fn_ir, i32, i64, i1,
-                 is_top_level, result_type=None,
-                 printf=None, fmt_int=None, fmt_bool=None, str_true=None, str_false=None):
+    def __init__(self, builder, ir_types, structs, fn_ir, i32, i64, i1, rt,
+                 is_top_level, result_type=None):
         self.builder = builder
         self.ir_types = ir_types    # type name -> ir type, builtins + every struct
         self.structs = structs      # struct name -> StructNode (field_order/field_type)
         self.fn_ir = fn_ir          # FnNode -> ir.Function
         self.i32, self.i64, self.i1 = i32, i64, i1
+        self.rt = rt                # shared module-wide runtime, see module docstring
         self.is_top_level = is_top_level
         self.result_type = result_type    # this function's declared result type, if not top level
-        self.printf = printf
-        self.fmt_int, self.fmt_bool = fmt_int, fmt_bool
-        self.str_true, self.str_false = str_true, str_false
         self.ptrs = {}  # DeclNode/ParamNode -> alloca ptr
+        self.self_ptr = None  # this function's own receiver, only set for a member fn
 
     def ir_type(self, type_name):
         return self.ir_types[type_name]
@@ -57,6 +70,52 @@ class CodeGen:
             return base_ptr
         idx = [ir.Constant(self.i32, 0)] + [ir.Constant(self.i32, i) for i in indices]
         return self.builder.gep(base_ptr, idx, inbounds=True, name="field")
+
+    def as_ptr(self, global_var):
+        return self.builder.bitcast(global_var, ir.PointerType(self.rt.i8))
+
+    def literal_ptr(self, text):
+        """A fresh global constant for text (a print literal piece or a
+        user string), bitcast in the current function - every call site
+        gets its own instruction, so this is safe to use from any
+        function, unlike reusing one precomputed bitcast everywhere."""
+        data = text.encode("latin1") + b"\0"
+        name = f"str.{next(self.rt.string_counter)}"
+        g = ir.GlobalVariable(self.rt.module, ir.ArrayType(self.rt.i8, len(data)), name=name)
+        g.linkage, g.global_constant = "private", True
+        g.initializer = ir.Constant(ir.ArrayType(self.rt.i8, len(data)), bytearray(data))
+        return self.as_ptr(g)
+
+    def print_literal(self, text):
+        self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_print_s), self.literal_ptr(text)])
+
+    def gen_print_value(self, value, type_name):
+        """value is never a pointer - a plain scalar, or (for a struct) the
+        first-class aggregate itself, walked field by field with
+        extract_value. No format carries a trailing newline: visit_print
+        adds exactly one, after the whole (possibly nested) value."""
+        if type_name == "i32":
+            self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_print_i32), value])
+        elif type_name == "i64":
+            self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_print_i64), value])
+        elif type_name == "bool":
+            chosen = self.builder.select(value, self.as_ptr(self.rt.str_true),
+                                          self.as_ptr(self.rt.str_false), name="print_str")
+            self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_print_s), chosen])
+        else:
+            struct = self.structs[type_name]
+            self.print_literal(f"{type_name}{{")
+            for idx, field_name in enumerate(struct.field_order):
+                self.print_literal(f"{field_name}: " if idx == 0 else f", {field_name}: ")
+                field_value = self.builder.extract_value(value, idx)
+                self.gen_print_value(field_value, struct.field_type[field_name])
+            self.print_literal("}")
+
+    def gen_read(self):
+        with self.builder.goto_entry_block():
+            ptr = self.builder.alloca(self.i32, name="read_tmp")
+        self.builder.call(self.rt.scanf, [self.as_ptr(self.rt.fmt_print_i32), ptr])
+        return self.builder.load(ptr)
 
     def visit_program(self, node):
         for stmt in node.statements:
@@ -151,11 +210,12 @@ class CodeGen:
         value = node.value.accept(self)
         if self.is_top_level:
             if node.value.type == "bool":
-                chosen = self.builder.select(value, self.str_true, self.str_false, name="exit_str")
-                self.builder.call(self.printf, [self.fmt_bool, chosen])
+                chosen = self.builder.select(value, self.as_ptr(self.rt.str_true),
+                                              self.as_ptr(self.rt.str_false), name="exit_str")
+                self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_bool), chosen])
             else:
                 value = self.coerce(value, node.value.type, "i64")
-                self.builder.call(self.printf, [self.fmt_int, value])
+                self.builder.call(self.rt.printf, [self.as_ptr(self.rt.fmt_int), value])
             self.builder.ret(ir.Constant(self.i32, 0))
         else:
             value = self.coerce(value, node.value.type, self.result_type)
@@ -183,18 +243,52 @@ class CodeGen:
         return self.builder.not_(node.operand.accept(self), name="not")
 
     def visit_var(self, node):
-        return self.builder.load(self.ptrs[node.decl])
+        ptr = self.gep_chain(self.ptrs[node.decl], node.indices)
+        return self.builder.load(ptr)
 
     def visit_field(self, node):
         ptr = self.gep_chain(self.ptrs[node.decl], node.indices)
         return self.builder.load(ptr)
 
     def visit_call(self, node):
-        args = []
+        if node.fn is None:  # the read() builtin - checker found no FnNode for it
+            return self.gen_read()
+        args = [self.self_ptr] if node.on_self else []
         for arg, param_decl in zip(node.args, node.fn.param_decls):
             value = arg.accept(self)
             args.append(self.coerce(value, arg.type, param_decl.type_name))
         return self.builder.call(self.fn_ir[node.fn], args, name="call")
+
+    def visit_member_call(self, node):
+        if hasattr(node.obj, "decl"):
+            self_ptr = self.gep_chain(self.ptrs[node.obj.decl], node.obj.indices)
+        else:
+            # the additional task: obj is a temporary (a call, a member
+            # call or a chain field) - store it into a fresh alloca and
+            # pass that address as this, the same as spelling it out by
+            # hand would: "for a member function call the result is
+            # stored into a temporary alloca, and its address is passed"
+            value = node.obj.accept(self)
+            with self.builder.goto_entry_block():
+                self_ptr = self.builder.alloca(self.ir_type(node.obj.type), name="tmp")
+            self.builder.store(value, self_ptr)
+        args = [self_ptr]
+        for arg, param_decl in zip(node.args, node.fn.param_decls):
+            value = arg.accept(self)
+            args.append(self.coerce(value, arg.type, param_decl.type_name))
+        return self.builder.call(self.fn_ir[node.fn], args, name="call")
+
+    def visit_chain_field(self, node):
+        value = node.base.accept(self)
+        return self.builder.extract_value(value, node.index, name="field")
+
+    def visit_print(self, node):
+        if isinstance(node.arg, StringNode):
+            self.print_literal(node.arg.value)
+        else:
+            value = node.arg.accept(self)
+            self.gen_print_value(value, node.arg.type)
+        self.print_literal("\n")
 
     def visit_const(self, node):
         return ir.Constant(self.ir_type(node.type), node.value)

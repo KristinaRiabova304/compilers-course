@@ -1,91 +1,194 @@
-Practice 6 grammar (EBNF): structs, functions, field access and calls on
-top of the Practice 5 language (if/else, while, blocks, !).
+Practice 7 grammar (EBNF): member functions, member calls, the mutation
+rule, read()/print() and a call in the middle of a chain, on top of the
+Practice 6 language (structs, functions, field access and calls).
 
 Notation: | alternatives, [ x ] optional, { x } zero or more,
 "quoted" terminals are token kinds the lexer emits verbatim,
 unquoted names are non-terminals with a rule below.
 
-program    ::= { struct } { fn } { statement } exit_stmt
-struct     ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
-field_decl ::= type [ "mut" ] ident NL
-fn         ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")"
-               "->" type NL block
-statement  ::= decl | assign | if | while
-decl       ::= type [ "mut" ] ident "{" init_value { "," init_value } "}"
-init_value ::= expr | "{" init_value { "," init_value } "}"
-type       ::= "i32" | "i64" | "bool" | ident
-assign     ::= ident { "." ident } ":=" expr
-if         ::= "if" expr NL block [ "else" NL block ]
-while      ::= "while" expr NL block
-block      ::= "{" NL { statement } [ exit_stmt NL ] "}" NL   (not empty)
-exit_stmt  ::= "exit" factor
-expr       ::= arith [ ( "==" | "!=" ) arith ]
-arith      ::= term { ( "+" | "-" ) term }
-term       ::= factor { "*" factor }
-factor     ::= number | "true" | "false" | ident | field | call | "!" factor
-field      ::= ident "." ident { "." ident }
-call       ::= ident "(" [ expr { "," expr } ] ")"
+program     ::= { struct } { fn } { statement } exit_stmt
+struct      ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
+field_decl  ::= type [ "mut" ] ident NL
+fn          ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")"
+                "->" type NL block
+statement   ::= decl | assign | if | while | print
+decl        ::= type [ "mut" ] ident "{" init_value { "," init_value } "}"
+init_value  ::= expr | "{" init_value { "," init_value } "}"
+type        ::= "i32" | "i64" | "bool" | ident
+assign      ::= ident { "." ident } ":=" expr
+if          ::= "if" expr NL block [ "else" NL block ]
+while       ::= "while" expr NL block
+print       ::= "print" "(" ( string | expr ) ")"
+string      ::= '"' { any byte except '"' and newline } '"'
+block       ::= "{" NL { statement } [ exit_stmt NL ] "}" NL   (not empty)
+exit_stmt   ::= "exit" factor
+expr        ::= arith [ ( "==" | "!=" ) arith ]
+arith       ::= term { ( "+" | "-" ) term }
+term        ::= factor { "*" factor }
+factor      ::= number | "true" | "false" | ident | field | chain | "!" factor
+field       ::= ident "." ident { "." ident }
+chain       ::= ( call | member_call ) { "." ident [ "(" [ expr { "," expr } ] ")" ] }
+call        ::= ident "(" [ expr { "," expr } ] ")"
+member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
 
 Terminals ident and number come from the lexer as "identifier" and
 "constant" tokens; how they are spelled is the lexer's rule, not the
 grammar's. "struct", "fn", "i32", "i64", "bool", "mut", "exit", "true",
-"false", "if", "else", "while" are the lexer's keywords, "{"/"}" block
-tokens, "("/")" their own token kind (so a call's parentheses never read
-as a block), ":="/"->"/"=="/"!="/"!"/"."/"," operator tokens, "+"/"-"/"*"
-single-byte operator tokens, used here with the text they carry. NL is
-the end of a line: one statement is one line, except if/while/struct/
-fn/block, which are several - the parser keeps a line cursor next to
-its token cursor for exactly this reason.
+"false", "if", "else", "while", "print" are the lexer's keywords
+("print" joined them this practice - a variable, field, parameter or
+function can no longer be named print, the same way none of them could
+ever be named exit or if), "{"/"}" block tokens, "("/")" their own token
+kind (so a call's parentheses never read as a block), ":="/"->"/"=="/
+"!="/"!"/"."/"," operator tokens, "+"/"-"/"*" single-byte operator
+tokens, used here with the text they carry. "string" is its own token
+kind, read byte by byte between two '"' with no escape sequences - an
+unterminated one (newline or end of file before the closing '"') is a
+lexer error at the opening '"'. read is not a keyword: read() parses
+through the ordinary call rule like any other name, and is reserved
+instead in checker.py (see below), the one place a name is otherwise free
+to be anything. NL is the end of a line: one statement is one line,
+except if/while/struct/fn/block, which are several - the parser keeps a
+line cursor next to its token cursor for exactly this reason.
+
+A struct's own fn (a member function) reuses the fn rule verbatim: same
+":=", parameter list, "->" and result type as a top-level fn, same block
+for its body. The only syntactic difference is where it is allowed -
+struct's field_decl { field_decl } { fn } puts every field before every
+member function: a field after a member function is a parser error at
+that field, a member function before the struct's first field is a
+parser error at its fn. A field and a member function of one struct (and
+two member functions of one struct) cannot share a name either, but that
+is a name-table check in checker.py, not a grammar rule.
+
+A member_call stands wherever a factor can - after "exit", inside an
+expr, as a decl's or an argument's value. Its object is a field chain of
+any length (ident { "." ident }, same as field, but at least the
+receiver itself) and the very next "." ident "(" after it is the member
+function's name and call; a plain call (just ident "(" ...")", no
+leading dots) is a different factor alternative, and field without a
+following "(" stays a field access, not a call - the parser decides which
+of field/call/member_call it is by peeking one token past each
+identifier. A member function is called on an object, never on a type:
+that the identifier in front names an actual variable (not just any
+identifier, and never a struct's own name) is, again, checker.py's job -
+the grammar does not distinguish a type name from a variable name any
+more than it did a struct name from any other ident in Practice 6.
+
+chain is the additional task: once a call or member_call has produced a
+value, "." can continue past it - "." ident alone reads a field of that
+value (extractvalue in gen.py: there is no variable behind a call's
+result to take the address of, so this is never a gep), "." ident "("
+calls a member function on it (gen.py stores the value into a fresh
+alloca and passes that address as the receiver, the same as any other
+member_call, just built from a temporary instead of a named object). The
+parser accepts this after every call unconditionally; that the value
+actually has a struct type when "." follows (a field or a further member
+call needs one to make sense) is checker.py's job, not the grammar's -
+the same split as a field or a call's own argument types. The chain never
+reaches assign: assign's own grammar never gained parentheses, so a line
+shaped like a chain followed by ":=" is caught earlier, by the same
+look-ahead that already rejects a bare call as a statement (it stops at
+the first "(" it finds after any number of leading ". ident", exactly
+where a chain would also start) - a dedicated error was not needed.
 
 A struct's type is a built-in type or an ident naming a struct declared
-above it; the grammar does not distinguish a struct type from any other
-ident - that a given name was actually declared, and what it names, is
-semantics, not syntax (the parser dispatches a line starting with ident
-ident... to decl the same way it dispatches "i32 x..."). Likewise a
-field/call's ident is any identifier; whether it resolves to a known
-function or a known field of the right type is checker.py's job.
+above it, or the struct's own name for one of its member function's
+parameters or result type (checker.py registers a struct before checking
+its own member functions' signatures for exactly this reason - a field
+still cannot be of the struct's own type, that would make its size
+unbounded, but a method returning or taking the type it is itself
+declared on has no such problem, it only ever sees it through a pointer
+or hands back a value it already built); the grammar does not distinguish
+a struct type from any other ident - that a given name was actually
+declared, and what it names, is semantics, not syntax (the parser
+dispatches a line starting with ident ident... to decl the same way it
+dispatches "i32 x..."). Likewise a field/call's ident is any identifier;
+whether it resolves to a known function or a known field of the right
+type is checker.py's job.
+
+print stands only where a statement can, never where a factor can - it
+has no value, so print nested inside any expr (print(1) + 2, or as the
+single argument of another print) fails the same way any other keyword
+would where an ident/number/"true"/"false" was expected: print simply
+is not a factor alternative. Its one argument is a bare string literal,
+printed as written with no further parsing, or any expr, evaluated and
+printed according to its type (checker.py's job to accept any built-in
+or struct type and reject nothing else - there is nothing to reject,
+every type is printable). A string literal, in turn, is only ever valid
+there: one appearing as a factor is a parser error, not a checker one -
+string is simply not a factor alternative either.
 
 init_value's recursion ("{" init_value { "," init_value } "}" standing
-in for a single value) is the additional task: a struct field's value
-may itself be written as a brace list instead of a variable or a call,
-built field by field, nested as deep as the struct nests. decl's own
-outer "{" ... "}" is the same rule one level up - a decl is just an
-init_value with a name and a type in front of it.
+in for a single value) lets a struct field's value be written as a
+brace list instead of a variable or a call, built field by field, nested
+as deep as the struct nests. decl's own outer "{" ... "}" is the same
+rule one level up - a decl is just an init_value with a name and a type
+in front of it.
 
 exit_stmt still takes one operand: a constant, a variable, a field
-chain or a call, never an operation - "exit" calls parse_factor, not
-parse_expr, exactly as in Practice 5. A call alone, with no "exit" and
-no ":=" catching its result, is not a statement; the field/call
-alternatives of factor cover every other place a value is needed.
+chain, a call, a member call, a chain, or "!"-prefixed one of those,
+never an operation - "exit" calls parse_factor, not parse_expr. A call
+(plain or member) alone, with no "exit" and no ":=" catching its result,
+is not a statement; the field/call/member_call/chain alternatives of
+factor cover every other place a value is needed.
 
 Semantics the grammar cannot express live in checker.py, not here:
-- a stack of scope frames, one per block (Practice 5), now swapped for
-  a fresh one holding just the parameters when checking a function body
-  - the body sees its own parameters and locals and every function of
-  the program (by name, regardless of declaration order - signatures
-  are all collected before any body is checked), never the top-level
-  variables;
+- a stack of scope frames, one per block, swapped for a fresh one
+  holding just the parameters when checking a function or member
+  function body - the body sees its own parameters and locals and every
+  function of the program by name (regardless of declaration order),
+  never the top-level variables; a member function's body additionally
+  sees its own struct's fields by their bare name, as if each were an
+  implicit "self.field" - the receiver is passed by pointer (never
+  copied), so a write through a bare field name inside a member function
+  is visible to the caller once the call returns, same as if it had
+  written through the object's own name from outside; a parameter or
+  local named like a field hides the field, exactly as an inner block's
+  variable hides an outer one's;
+- a bare call f(...) inside a member function looks among that struct's
+  own member functions before the program's global ones - an implicit
+  call on the same object, hiding a global function of the same name;
+  read() is a reserved builtin ahead of both (no field, parameter, local,
+  struct or program function may ever be named read, checked wherever
+  any of those introduces a name), so it can never collide with either;
+- a member function is mutating if it assigns to a field of its own
+  object (directly, or through a chain that starts at one of its own
+  fields), or calls a mutating member function on its own object or on
+  one of its fields - never through an unrelated local/parameter, and
+  never through a temporary produced by a chain (the additional task):
+  "the result is a temporary copy ... any member function can be called
+  on it, also a mutating one", with no further obligation, since nothing
+  else aliases it. Member functions may call each other in a cycle, so
+  this is decided only after every body in the program has been checked,
+  as a fixed point over the call graph gathered while checking them: seed
+  it with the ones that assign a field directly, then repeat marking the
+  callers of an already-mutating function until nothing new is marked.
+  Only once this is final can a call's own object chain be checked: a
+  mutating call needs every link mut - the object and each field on the
+  way, the same rule as an assignment - a non-mutating one needs nothing;
 - a struct's fields are checked against the structs declared strictly
   above it, so a struct can never contain itself, directly or through
   another struct - this falls out of the ordering, not a separate
-  occurs-check;
-- a decl/call's values and arguments are checked field by field /
-  parameter by parameter against the type they fill, with the same
-  i32-into-i64 widening rule as Practice 4, and a single value of a
-  struct's own type copies the whole object instead of filling its
-  first field;
+  occurs-check (a member function's own parameter/result types are not
+  under this rule - see above);
+- a decl/call/member_call's values and arguments are checked field by
+  field / parameter by parameter against the type they fill, with the
+  same i32-into-i64 widening rule as before, and a single value of a
+  struct's own type copies the whole object instead of filling its first
+  field;
 - a field is constant unless its declaration says mut; "x.y.z := e"
   needs x itself mut and every field named on the way (y, z) mut - one
   missing mut anywhere on the chain rejects the whole assignment, even
-  if the variable and the final field are both mut; replacing a whole
-  object with ":=" additionally needs every field of its type, at
-  every depth, to be mut (a single non-mut field blocks ":=" on the
-  whole object even when the variable holding it is mut);
-- inside a function exit's value must match the function's declared
-  result type (with the same widening rule); at the top level it still
-  has no target type to match, only the rule that it must be built-in,
-  never a struct.
-That a call's arguments are evaluated left to right, and that an inner
-"{}" is built depth-first before the object that holds it, is not
-semantics either: it falls out of a single recursive-descent walk, the
-same way operator precedence did in Practice 4/5.
+  if the variable and the final field are both mut; the same rule
+  applies starting from an implicit self field inside a member function,
+  with the field's own mut standing in for "x itself mut"; replacing a
+  whole object with ":=" additionally needs every field of its type, at
+  every depth, to be mut;
+- inside a function or member function, exit's value must match the
+  declared result type (with the same widening rule); at the top level
+  it still has no target type to match, only the rule that it must be
+  built-in, never a struct.
+That a call's or member call's arguments are evaluated left to right,
+and that an inner "{}" is built depth-first before the object that holds
+it, is not semantics either: it falls out of a single recursive-descent
+walk, the same way operator precedence did.

@@ -1,160 +1,169 @@
-# Languages and Compilers — Practice 6: structs and functions
+# Languages and Compilers — Practice 7: member functions
 
-A toy language with three built-in types (`i32`, `i64`, `bool`) plus
-user-defined `struct`s, and now `fn` functions, compiled to LLVM IR via
-`llvmlite.ir`.
+A toy language with three built-in types (`i32`, `i64`, `bool`),
+user-defined `struct`s with fields and now member functions declared
+inside them, plus the `read()`/`print()` builtins, compiled to LLVM IR
+via `llvmlite.ir`.
 
-- `lexer.py` — Task 1 (Practice 2): a hand-written byte-level lexer state
-  machine (`Token`, `lex`, `split_statements`). No regular expressions, no
-  `str.split()`/`strtok`, no lexer generator. Practice 6 adds `struct`
-  and `fn` to `KEYWORDS`, and five new operator tokens: `.` and `,` are
-  single-byte like `+`/`*`; `(`/`)` get their own `"paren"` token kind
-  (a call's parentheses must never be mistaken for a block's `{`/`}`);
-  `->` needs one byte of lookahead to tell it from a bare `-`, so `-`
-  gets its own `MINUS` state, the same trick already used for `:=`,
-  `==`/`!=` and `!`.
-- `grammar.ebnf` — the language in EBNF: `program` now orders
-  `{ struct } { fn } { statement } exit`, `struct`/`fn`/`field_decl` are
-  new top-level rules, `decl`'s single `expr` becomes an `init_value`
-  list (a value or a nested `{ ... }`, the additional task), `factor`
-  gained `field` and `call`, `assign` gained an optional `.` chain.
-- `ast_nodes.py` — the class hierarchy the grammar dictates: `StructNode`
-  (fields as `(type_name, mutable, name, line, col)` tuples, filled in by
-  the checker with `field_index`/`field_type`/`field_mut`/`field_order`),
-  `FnNode` (params as tuples, body a `BlockNode`), `ParamNode` (stands in
-  for a parameter the same way `DeclNode` stands in for a local variable
-  — `mutable` is always `False`), `InitNode` (a decl's `{ ... }`, items
-  possibly nested `InitNode`s), `FieldNode` and `CallNode` for the new
-  factors, and `AssignNode` now carries a `fields` chain.
-- `parser.py` — a hand-written recursive-descent parser, line cursor
-  (`peek_line`/`next_line`) next to the token cursor, as in Practice 5.
-  `parse_program` tracks a `structs -> fns -> statements` phase and
-  rejects a struct/fn that shows up after a later phase has started.
-  `parse_statement`'s `identifier` branch now needs one token of
-  lookahead (`peek_next`) to tell `TypeName name{...}` (a decl with a
-  struct type) from `name := ...`/`name.field := ...` (an assign) from
-  `name(...)` on its own (a call alone is not a statement — rejected
-  right there). `parse_factor`'s `identifier` branch needs the same
-  lookahead for `name(...)` (a call) vs `name.field...` (a field chain)
-  vs a bare `name` (a variable). `parse_init`/`parse_init_item` recurse
-  for nested `{}` (the additional task); no parser generator, no
-  regular expressions over the token list, no `eval`.
-- `checker.py` — Task 2/3: `SemanticChecker`, extended with two more
-  tables alongside the Practice 5 scope stack: `self.structs` (name ->
-  `StructNode`, field index/type/mut/order resolved here — *the
-  semantic pass finds the index*) and `self.functions` (name -> `FnNode`,
-  every signature collected before any body is checked, so a function
-  may call itself or one declared below it). Checking a function body
-  swaps `self.scopes` for a fresh stack holding only its parameters —
-  the body never sees the top-level variables. `resolve_chain` walks a
-  `.`-chain once for both a read (`visit_field`) and a write
-  (`visit_assign`), raising at the first non-mut link when the write
-  needs one; `is_fully_mut` recurses through a struct's fields (and
-  their struct fields) to decide whether `:=` may replace it whole.
-  `check_init` validates a decl's `{ ... }` field by field against the
-  struct (or the single value against a built-in type), recursing into
-  nested `{}`. Still the only place that rejects a program, with
-  `line:column`; `gen.py` reads `node.type`/`node.decl`/`node.indices`/
-  `node.fn` and looks nothing up by name itself.
-- `gen.py` — Task 1/2/3: `CodeGen`, now built once per function body
-  (and once for the top-level statements, which live in `main`) since
-  each function needs its own `builder`/`self.ptrs`. `is_top_level`
-  picks whether `exit` prints and returns 0 (the program ending) or
-  coerces its value to the function's result type and `ret`s it. A
-  field is reached with one `gep` whose index list is the chain
-  `resolve_chain` already resolved (`gep_chain`) — chaining the indices
-  in one instruction walks through nested structs without an
-  intermediate pointer. An object is an `alloca` of a named struct type;
-  a struct value passed by value, returned, or copied whole is loaded
-  from one `alloca` and stored into another (or passed/returned
-  directly — a first-class aggregate, no byref). A nested `{}` (the
-  additional task) builds one aggregate value bottom-up with chained
-  `insert_value`, never touching memory until the whole value is ready
-  to store. The only IR text produced is `str(module)`.
-- `compiler.py` — wires lexer -> parser -> `SemanticChecker` ->
-  `CodeGen` together. Builds every struct as a named identified type
-  (`module.context.get_identified_type(name).set_body(...)`) in
-  declaration order, so a later struct's fields already find their
-  type; declares every function's `ir.Function` (name prefixed `fn_` so
-  a program function called `main` or `printf` cannot clash with the
-  runtime) before generating any body, mirroring the checker's
-  signatures-then-bodies order; then generates each function's body and
-  finally `main`'s.
+- `lexer.py` — Practice 7 adds a `STRING` state: any byte except `"` and
+  a newline, between two `"`, with no escape sequences; an unterminated
+  one (newline or end of file first) is a lexer error at the opening
+  `"`. `print` joins `KEYWORDS` (so a variable, field, parameter or
+  function can never be named `print`, the same way none of them can be
+  named `exit`). `read` stays a plain identifier — `read()` parses
+  through the ordinary `call` rule like any other name — and is reserved
+  only in `checker.py`, the one place a name is otherwise free to be
+  anything.
+- `grammar.ebnf` — `struct` gained `{ fn }` after its fields: a function
+  declared inside a struct (a *member function*) reuses the top-level
+  `fn` rule verbatim, just in a different place. `factor` gained
+  `member_call` (`obj.f(...)`) and `chain` (the additional task — once a
+  call has produced a value, `.` can keep going: `.field` reads a field
+  of it, `.f(...)` calls a member function on it). `statement` gained
+  `print`.
+- `ast_nodes.py` — `StructNode` now also carries `fns`, a list of
+  `MemberFnNode` (the same shape as `FnNode`) in declaration order,
+  after every field. `MemberCallNode` (`obj`/`name`/`args` — `obj` is a
+  `VarNode`/`FieldNode` for a named receiver, or itself a
+  `CallNode`/`MemberCallNode`/`ChainFieldNode` for a temporary one, the
+  additional task) and `ChainFieldNode` (`base`/`field`, reading a field
+  of a temporary with no variable behind it to address) are new factors.
+  `StringNode` and `PrintNode` back the new `print` statement.
+- `parser.py` — a struct's body now parses its fields, then its member
+  functions, in that order, rejecting a field after a member function
+  and a member function before the first field, each at the exact
+  token. `parse_factor`'s identifier branch reads a `.`-chain one name
+  at a time: `(` right after a name ends the chain as a `member_call`
+  (its object built from the names read so far), anything else keeps it
+  as a field read. Every call or member call then runs through
+  `parse_chain_tail` (the additional task): a further `.` continues
+  reading fields or calling member functions on the result, with no
+  type check at parse time — whether the result is actually a struct is
+  `checker.py`'s job. `print` is a new statement, dispatched on the
+  `print` keyword wherever any other statement can appear (top level, a
+  function/member function body, `if`/`else`/`while`).
+- `checker.py` — `resolve_chain` (shared by reading and writing a field
+  chain, and now a bare variable too) resolves a name that isn't a
+  local/parameter against the current member function's own struct, as
+  if it had read `self.name` — a parameter or local of the same name
+  still hides the field. A bare call `f(...)` inside a member function
+  looks among that struct's own member functions before the program's
+  global ones. A member function is *mutating* if it assigns to one of
+  its own fields, or calls a mutating member function on itself or one
+  of its fields; since member functions can call each other in a cycle,
+  this is a fixed point computed once every body in the program has been
+  checked, and only then is a mutating call's receiver chain checked for
+  `mut` all the way through (a temporary produced by a chain is always
+  fine to call a mutating function on — nothing else aliases it).
+  `read()` is a builtin recognised ahead of any function lookup; `print`
+  is already unusable as a name via the lexer, `read` is checked
+  wherever any other name is introduced (field, member function,
+  function, parameter, local).
+- `gen.py` — a member function's receiver arrives as a plain pointer
+  argument; `CodeGen.ptrs` keys it by the function's own `MemberFnNode`
+  (no `alloca` needed, it is already an address), so the same
+  `gep_chain` used for every other variable reaches its fields. `print`
+  can appear in any function, not just the one that becomes `main`, so
+  every `CodeGen` instance shares one runtime context (the module,
+  `printf`, `scanf`, the format globals, a counter for unique string
+  names) instead of the top level alone owning them; a global is never
+  pre-bitcast — each use bitcasts fresh in whichever function's builder
+  is current, since one function's instructions cannot be reused as a
+  value in another. A chain's temporary (the additional task) is stored
+  into a fresh `alloca` and its address passed as the receiver, exactly
+  as calling a member function on a named variable would.
+- `compiler.py` — a member function becomes an `ir.Function` named
+  `Struct_method` (e.g. `Point_shift`, no `fn_` prefix — that one is
+  only for top-level functions, to keep them out of `main`/`printf`'s
+  way), its first parameter named `this`. Builds and shares the runtime
+  context every `CodeGen` instance reads from.
 - `tests/ok/`, `tests/err/` — programs that must compile and run, and
   programs that must fail to compile, each with its expected
-  stdout/stderr next to it, plus a runner (`tests/run_tests.py`).
+  stdout/stderr next to it. A program that calls `read()` keeps its
+  input in a `NAME.in` file next to `NAME.txt`; `tests/run_tests.py`
+  feeds it to `lli` as standard input when present.
 
 ## Language
 
 One statement per line. Three built-in types (`i32`, `i64`, `bool`)
-plus `struct`s declared at the top of the file and `fn`s declared after
-them — a program is `{ struct } { fn } { statement } exit`, in that
-order, always.
+plus `struct`s declared at the top of the file (fields, then member
+functions) and `fn`s declared after them — a program is
+`{ struct } { fn } { statement } exit`, in that order, always.
 
 ```
 struct Point
 {
     i32 mut x
     i32 mut y
-}
-struct Circle
-{
-    Point center
-    i32 mut radius
+
+    fn d2 := () -> i32
+    {
+        i32 r{x * x + y * y}
+        exit r
+    }
+
+    fn moved := (i32 dx) -> Point
+    {
+        Point q{x + dx, y}
+        exit q
+    }
 }
 
-fn moved := (Point p, i32 dx) -> Point
-{
-    Point q{p.x + dx, p.y}
-    exit q
-}
-
-Point p{10, 20}
-Circle c{p, 5}
-i32 xCoord{c.center.x}
-Point mut r{moved(p, 1)}
-r.x := r.x + 1
-exit r.x
+Point mut p{3, 4}
+print("distance squared:")
+print(p.d2())
+i32 shifted{p.moved(1).d2()}
+exit shifted
 ```
 
-Rules on top of Practice 5 (if/else/while/blocks/scope frames/`!`,
-which are unchanged):
+Rules on top of Practice 6 (structs, `fn` functions, field chains and
+calls, which are unchanged):
 
-- A struct field is a built-in type or a struct declared **above** it
-  (never itself, directly or through another struct); a field is
-  constant unless marked `mut`. An object is declared like a variable,
-  one value per field in order: `Point p{10, 20}`. A field that is
-  itself a struct takes a value of that type (a variable or a call) —
-  or, written inline, a nested `{}` built the same way, as deep as the
-  struct nests: `Circle c{{10, 20}, 5}`. One value of the struct's own
-  type copies the whole object: `Point q{p}`.
-- `x.y.z` reads a field chain; `x.y.z := e` writes through one. A write
-  needs **every** link mut — the variable and every field named on the
-  way — one non-mut link anywhere rejects it, even if the ends are mut.
-  Replacing a whole object with `:=` (no `.` chain) additionally needs
-  every field of its type, at every depth, to be mut — a struct with
-  even one non-mut field can never be replaced whole, only field by
-  field.
-- `fn name := (T1 p1, T2 p2) -> R { ... }` declares a function: any
-  number of parameters (built-in or struct), a result type (built-in
-  or struct). Parameters are copies, never reassignable; the body sees
-  only its own parameters and locals and every function of the program
-  (by name — a function may call itself or one declared below it),
-  never the top-level variables. The body is a block whose last line is
-  `exit`; inside a function `exit` ends the function with its value (the
-  function's result type, exactly or `i32`-into-`i64` widened); an
-  `exit` inside an `if` ends the function early. At the top level `exit`
-  still ends the program and its value must be a built-in type.
-- `name(a, b)` calls a function; the number and types of the arguments
-  must match the parameters (the same widening rule). A call is a
-  factor — it can stand wherever a field or a variable can — but never
-  alone as a statement.
-- Not in the language beyond Practice 5: grouping parentheses (`(`/`)`
-  exist only around a call's arguments or a function's parameters), a
-  struct inside a struct it doesn't own, a struct or a function
-  declared after a statement, a function or a struct nested inside a
-  function body, a `{}` written for a built-in field, a `{}` with the
-  wrong number of values.
+- A struct's fields come first, then its member functions:
+  `fn name := (T1 p1, ...) -> R { ... }`, declared and called exactly
+  like a top-level function, except it is called *on an object*:
+  `p.d2()`, never on the type itself (`Point.d2()` is an error). The
+  object can be a field chain (`c.center.d2()`); a field after a member
+  function, a member function before the first field, or a name shared
+  between a field and a member function (or two member functions) are
+  all rejected.
+- Inside a member function's body, a bare name is looked up among its
+  parameters and locals first, then among its own struct's fields — as
+  if every field read `self.field`. A bare call looks among the same
+  struct's member functions first, then the program's global functions.
+  The object is passed by address, so writing a field (`x := x + dx`)
+  is visible to the caller once the call returns, same as if it had
+  written `p.x := p.x + dx` from outside.
+- A member function is **mutating** if it writes one of its own fields,
+  or calls a mutating member function on itself or one of its fields.
+  A mutating call needs every link of its receiver chain `mut` — the
+  object and each field on the way, the same rule as an assignment; a
+  non-mutating call needs nothing. A chain's own temporary result
+  (below) is always fine to call any member function on, mutating or
+  not — it aliases nothing.
+- `read()` reads one `i32` from standard input; it stands wherever a
+  factor can. `print(arg)` is a statement — it has no value — printing
+  its argument (an `i32`, an `i64`, a `bool`, a string literal written
+  `"..."`, or a struct, printed field by field in declaration order)
+  followed by a newline. Both names are reserved: no variable, field,
+  parameter, function or member function may be named `read` or
+  `print`.
+- A call's result can be chained further when it is a struct: `.field`
+  reads a field of it, `.f(...)` calls a member function on it —
+  `p.moved(1).d2()` moves a copy of `p` and reads its own `d2()`,
+  `p` itself unaffected. A `.` after a call whose result is not a
+  struct is an error at that `.`; a chain can be read but never
+  assigned to, since it names no variable.
+- `x.y.z` still reads a field chain; `x.y.z := e` still writes through
+  one, needing every link mut. One value of a struct's own type still
+  copies the whole object; `:=` on a whole object still needs every
+  field, at every depth, to be mut.
+- Not in the language beyond Practice 6: grouping parentheses, a struct
+  inside a struct it doesn't own (a member function's own parameter or
+  result type is the one exception — it may be its struct's own type,
+  seen only through a pointer or handed back by value), assigning to a
+  call's result, a string literal anywhere but `print`'s argument, a
+  member function called on anything but an object of the right type.
 
 ## Running the compiler
 
@@ -186,7 +195,8 @@ compilation error: line 7:6: 'Point' has no field 'z'
 python3 tests/run_tests.py
 ```
 
-Compiles every `tests/ok/*.txt`, runs it through `lli` and diffs stdout
+Compiles every `tests/ok/*.txt`, runs it through `lli` (feeding it
+`NAME.in` as standard input when that file exists) and diffs stdout
 against the matching `.expected` file; compiles every `tests/err/*.txt`
 and diffs stderr against its `.expected` file. Requires `lli` on `PATH`
 (part of LLVM, e.g. `brew install llvm`). Some `tests/ok/*` also have a
