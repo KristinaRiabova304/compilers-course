@@ -1,0 +1,1 @@
+compilation error: line 3:5: a struct needs at least one field before its first member function

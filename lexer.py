@@ -1,0 +1,199 @@
+"""Task 1: a hand-written lexer state machine over bytes.
+
+No regular expressions, no str.split()/strtok, no lexer generator: a single
+loop that reads one byte at a time, looks at the current state and the
+byte's class, and either stays in the state, switches to another one, or
+emits a token and returns to the start state.
+"""
+
+
+class CompileError(Exception):
+    def __init__(self, line, col, msg):
+        super().__init__(msg)
+        self.line, self.col, self.msg = line, col, msg
+
+    def __str__(self):
+        return f"line {self.line}:{self.col}: {self.msg}"
+
+
+# category, subkind for each reserved word
+KEYWORDS = {
+    "i32": ("keyword", "typename"),
+    "i64": ("keyword", "typename"),
+    "bool": ("keyword", "typename"),
+    "mut": ("keyword", "specifier"),
+    "exit": ("keyword", "statement"),
+    "true": ("keyword", "boolean"),
+    "false": ("keyword", "boolean"),
+    "if": ("keyword", "if"),
+    "else": ("keyword", "else"),
+    "while": ("keyword", "while"),
+    "struct": ("keyword", "struct"),
+    "fn": ("keyword", "fn"),
+    "print": ("keyword", "print"),
+}
+
+# '-' is not here: it needs one byte of lookahead to tell '-' from '->'.
+SINGLE_BYTE_OPS = {ord("+"): "+", ord("*"): "*", ord("."): ".", ord(","): ","}
+
+
+class Token:
+    __slots__ = ("kind", "sub", "text", "line", "col")
+
+    def __init__(self, kind, sub, text, line, col):
+        self.kind, self.sub, self.text, self.line, self.col = kind, sub, text, line, col
+
+    def __repr__(self):
+        text = "\\n" if self.text == "\n" else self.text
+        pos = f"{self.line}:{self.col}"
+        if self.sub:
+            return f"({text}, {self.kind}, {self.sub}, {pos})"
+        return f"({text}, {self.kind}, {pos})"
+
+
+def is_ident_start(b):
+    return b is not None and (65 <= b <= 90 or 97 <= b <= 122 or b == 95)  # A-Z a-z _
+
+
+def is_digit(b):
+    return b is not None and 48 <= b <= 57  # 0-9
+
+
+def is_ident_cont(b):
+    return is_ident_start(b) or is_digit(b)
+
+
+def lex(data: bytes):
+    """Turn source bytes into a flat list of Token (endline tokens included
+    as statement separators, matching the worked example in the practice)."""
+    tokens = []
+    state = "START"
+    start_i = start_line = start_col = 0
+    line, col = 1, 1
+
+    i, n = 0, len(data)
+    while i <= n:
+        b = data[i] if i < n else None
+
+        if state == "START":
+            if b is None:
+                break
+            elif b in (32, 9):  # space, tab
+                pass
+            elif b == 10:  # \n
+                tokens.append(Token("endline", None, "\n", line, col))
+                line += 1
+                col = 0
+            elif is_ident_start(b):
+                state, start_i, start_line, start_col = "IDENT", i, line, col
+            elif is_digit(b):
+                state, start_i, start_line, start_col = "NUMBER", i, line, col
+            elif b == ord("{"):
+                tokens.append(Token("block", "start", "{", line, col))
+            elif b == ord("}"):
+                tokens.append(Token("block", "end", "}", line, col))
+            elif b == ord("("):
+                tokens.append(Token("paren", "start", "(", line, col))
+            elif b == ord(")"):
+                tokens.append(Token("paren", "end", ")", line, col))
+            elif b in SINGLE_BYTE_OPS:
+                tokens.append(Token("operator", None, chr(b), line, col))
+            elif b == ord(":"):
+                state, start_i, start_line, start_col = "COLON", i, line, col
+            elif b == ord("="):
+                state, start_i, start_line, start_col = "EQ", i, line, col
+            elif b == ord("!"):
+                state, start_i, start_line, start_col = "BANG", i, line, col
+            elif b == ord("-"):
+                state, start_i, start_line, start_col = "MINUS", i, line, col
+            elif b == ord('"'):
+                state, start_i, start_line, start_col = "STRING", i, line, col
+            else:
+                ch = chr(b) if 32 <= b < 127 else f"\\x{b:02x}"
+                raise CompileError(line, col, f"unexpected byte '{ch}'")
+
+        elif state == "IDENT":
+            if is_ident_cont(b):
+                pass
+            else:
+                word = data[start_i:i].decode("ascii")
+                kind, sub = KEYWORDS.get(word, ("identifier", None))
+                tokens.append(Token(kind, sub, word, start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
+
+        elif state == "NUMBER":
+            if is_digit(b):
+                pass
+            elif is_ident_start(b):
+                raise CompileError(start_line, start_col,
+                                    f"invalid number: unexpected byte '{chr(b)}' after "
+                                    f"'{data[start_i:i].decode('ascii')}'")
+            else:
+                word = data[start_i:i].decode("ascii")
+                tokens.append(Token("constant", "numeric", word, start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
+
+        elif state == "COLON":
+            if b == ord("="):
+                tokens.append(Token("operator", None, ":=", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(start_line, start_col, "':' is not followed by '='")
+
+        elif state == "EQ":
+            if b == ord("="):
+                tokens.append(Token("operator", None, "==", start_line, start_col))
+                state = "START"
+            else:
+                raise CompileError(start_line, start_col,
+                                    "expected '==' (a single '=' is not an operator)")
+
+        elif state == "BANG":
+            if b == ord("="):
+                tokens.append(Token("operator", None, "!=", start_line, start_col))
+                state = "START"
+            else:
+                tokens.append(Token("operator", None, "!", start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
+
+        elif state == "MINUS":
+            if b == ord(">"):
+                tokens.append(Token("operator", None, "->", start_line, start_col))
+                state = "START"
+            else:
+                tokens.append(Token("operator", None, "-", start_line, start_col))
+                state = "START"
+                continue  # re-read this byte in START
+
+        elif state == "STRING":
+            if b is None or b == 10:  # end of file or \n: no closing '"' on this line
+                raise CompileError(start_line, start_col, "string literal is not closed on its line")
+            elif b == ord('"'):
+                text = data[start_i + 1:i].decode("latin1")  # no escapes: any byte goes through as is
+                tokens.append(Token("string", None, text, start_line, start_col))
+                state = "START"
+            # else: any other byte is part of the literal, stay in STRING
+
+        i += 1
+        col += 1
+
+    return tokens
+
+
+def split_statements(tokens):
+    """Group the flat token stream into per-line statements (blank lines
+    are dropped, endline tokens are not part of any statement)."""
+    statements, current = [], []
+    for tok in tokens:
+        if tok.kind == "endline":
+            if current:
+                statements.append(current)
+            current = []
+        else:
+            current.append(tok)
+    if current:
+        statements.append(current)
+    return statements

@@ -1,0 +1,12 @@
+struct Inner
+{
+    i32 x
+}
+struct Outer
+{
+    Inner mut inner
+}
+Inner tmp{9}
+Outer mut o{{5}}
+o.inner := tmp
+exit o.inner.x

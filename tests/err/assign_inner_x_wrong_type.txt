@@ -1,0 +1,7 @@
+if true
+{
+    bool mut x{true}
+    x := 5
+    exit x
+}
+exit 0

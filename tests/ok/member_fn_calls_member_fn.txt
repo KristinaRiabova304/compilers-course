@@ -1,0 +1,17 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn poke := () -> i32
+    {
+        x := x + 1
+        exit x
+    }
+    fn bump := () -> i32
+    {
+        i32 r{poke()}
+        exit r
+    }
+}
+Point mut p{3, 4}
+exit p.bump()

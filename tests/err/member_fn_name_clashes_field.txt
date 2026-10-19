@@ -1,0 +1,11 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn x := () -> i32
+    {
+        exit 0
+    }
+}
+Point p{1, 2}
+exit p.x()

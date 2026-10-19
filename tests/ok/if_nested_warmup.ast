@@ -1,0 +1,22 @@
+Program
+  Decl x i32 mut
+    Init
+      Const 10
+  If
+    Bool true
+    Block
+      Decl x bool mut
+        Init
+          Bool true
+      If
+        Var x
+        Block
+          Decl x i64 mut
+            Init
+              Const 20
+          Exit
+            Var x
+      Exit
+        Var x
+  Exit
+    Var x
