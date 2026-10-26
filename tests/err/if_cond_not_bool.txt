@@ -1,0 +1,6 @@
+i32 x{1}
+if x
+{
+    exit x
+}
+exit x

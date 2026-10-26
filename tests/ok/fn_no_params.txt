@@ -1,0 +1,5 @@
+fn always5 := () -> i32
+{
+    exit 5
+}
+exit always5()

@@ -1,0 +1,11 @@
+i32 mut a{3}
+bool b{a == 3}
+if b
+{
+    exit 100
+}
+else
+{
+    exit 200
+}
+exit 0

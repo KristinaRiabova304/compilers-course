@@ -1,0 +1,6 @@
+fn f := (i64 a) -> i64
+{
+    exit a
+}
+i32 x{7}
+exit f(x)
