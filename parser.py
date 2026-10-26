@@ -346,7 +346,7 @@ class Parser:
 
         brace = self.peek()
         if brace is None:
-            raise CompileError(name_tok.line, name_tok.col + len(name_tok.text),
+            raise CompileError(name_tok.line, name_tok.col,
                                 f"variable '{name_tok.text}' needs an initialiser in {{}}")
         if not (brace.kind == "block" and brace.sub == "start"):
             raise self.error(f"variable '{name_tok.text}' needs an initialiser in {{}}", brace)
