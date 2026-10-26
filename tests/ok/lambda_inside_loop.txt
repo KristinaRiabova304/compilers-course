@@ -1,0 +1,12 @@
+i32 mut i{0}
+i32 mut sum{0}
+while i != 3
+{
+    fn snap := [i]() -> i32
+    {
+        exit i
+    }
+    sum := sum + snap()
+    i := i + 1
+}
+exit sum

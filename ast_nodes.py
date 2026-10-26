@@ -165,6 +165,37 @@ class PrintNode(StmtNode):
         self.arg.dump(indent + 1)
 
 
+class LambdaNode(StmtNode):
+    """fn name := [captures](params) -> type NL block, a function declared
+    where a statement stands, together with copies of the variables it
+    needs (Practice 8 Task 2). captures: list of (mutable, name, line,
+    col) - mutable is the additional task, [mut name]; params: tuples
+    like a FnNode's. The semantic pass rewrites every lambda into a
+    struct (one field per capture) with a 'call' member function (this
+    lambda's own params/result/body) plus a decl of that struct type,
+    capturing the current values - checker.py sets .struct (and .decl)
+    once it has them, for --ast-checked to show; --ast, the parse tree,
+    never does. gen.py's visit_lambda is a no-op: the struct/member
+    function are generated the same way any other is (by walking every
+    struct the checker knows about, not just the parsed ones), and the
+    capturing decl right after this node in the statement list does the
+    rest, through the ordinary DeclNode path."""
+
+    def __init__(self, line, col, name, captures, params, result_type, body):
+        super().__init__(line, col)
+        self.name, self.captures = name, captures
+        self.params, self.result_type, self.body = params, result_type, body
+
+    def accept(self, visitor):
+        return visitor.visit_lambda(self)
+
+    def dump(self, indent=0):
+        print("  " * indent + f"Lambda {self.name} -> {self.result_type}")
+        struct = getattr(self, "struct", None)
+        if struct is not None:
+            struct.dump(indent + 1)
+
+
 class ExitNode(Node):
     def __init__(self, line, col, value):
         super().__init__(line, col)
@@ -293,6 +324,15 @@ class ChainFieldNode(ExprNode):
 
 
 class CallNode(ExprNode):
+    """name(args): the parser cannot tell a plain function call from a
+    callable-object call (Practice 8 Task 1 - name(args) is sugar for
+    name.call(args) when name is a variable, not a function), so it always
+    builds this node; the semantic pass sets .obj when the rewrite
+    applies (gen.py then generates it exactly like a MemberCallNode) -
+    .obj is never set at parse time, so --ast (the parse tree) always
+    reads "Call", only --ast-checked (after the semantic pass) can read
+    "CallableCall"."""
+
     def __init__(self, line, col, name, args):
         super().__init__(line, col)
         self.name, self.args = name, args
@@ -301,7 +341,8 @@ class CallNode(ExprNode):
         return visitor.visit_call(self)
 
     def dump(self, indent=0):
-        print("  " * indent + f"Call {self.name}")
+        label = "CallableCall" if getattr(self, "obj", None) is not None else "Call"
+        print("  " * indent + f"{label} {self.name}")
         for arg in self.args:
             arg.dump(indent + 1)
 

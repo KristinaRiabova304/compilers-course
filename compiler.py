@@ -25,8 +25,13 @@ def compile_program(program):
     module.triple = llvm.get_default_triple()
     i32, i64, i1, i8 = ir.IntType(32), ir.IntType(64), ir.IntType(1), ir.IntType(8)
 
+    # checker.structs, not program.structs: a lambda's generated struct
+    # (Practice 8 Task 2) is declared mid-walk, into the same dict, never
+    # added to program.structs - iterating the dict (insertion order:
+    # every user struct, then every lambda struct in the order its lambda
+    # was declared) reaches both, in a still-valid dependency order
     ir_types = {"i32": i32, "i64": i64, "bool": i1}
-    for struct in program.structs:  # declared-above order, so every field type is already in here
+    for struct in checker.structs.values():
         struct_ty = ir.global_context.get_identified_type(struct.name)
         struct_ty.set_body(*(ir_types[field_type] for field_type in
                               (struct.field_type[name] for name in struct.field_order)))
@@ -43,7 +48,7 @@ def compile_program(program):
     # a member fn takes one extra leading argument, a pointer to its
     # receiver (so a write through a bare field name is visible to the
     # caller) - everything else about its signature is the same
-    for struct in program.structs:
+    for struct in checker.structs.values():
         for member_fn in struct.fns:
             param_types = [ir.PointerType(ir_types[struct.name])] + \
                 [ir_types[p.type_name] for p in member_fn.param_decls]
@@ -99,7 +104,7 @@ def compile_program(program):
             fn_gen.ptrs[param_decl] = ptr
         fn.body.accept(fn_gen)
 
-    for struct in program.structs:
+    for struct in checker.structs.values():
         for member_fn in struct.fns:
             fn_builder = ir.IRBuilder(fn_ir[member_fn].append_basic_block("entry"))
             fn_gen = CodeGen(fn_builder, ir_types, checker.structs, fn_ir, i32, i64, i1, rt,
@@ -133,6 +138,18 @@ def main():
             data = f.read()
         try:
             program = parse(data)
+        except CompileError as e:
+            sys.stderr.write(f"compilation error: {e}\n")
+            sys.exit(1)
+        program.dump()
+        return
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--ast-checked":
+        with open(sys.argv[2], "rb") as f:
+            data = f.read()
+        try:
+            program = parse(data)
+            SemanticChecker().check(program)
         except CompileError as e:
             sys.stderr.write(f"compilation error: {e}\n")
             sys.exit(1)

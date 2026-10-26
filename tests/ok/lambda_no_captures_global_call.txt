@@ -1,0 +1,11 @@
+fn sq := (i32 v) -> i32
+{
+    i32 r{v * v}
+    exit r
+}
+fn sqSum := [](i32 a, i32 b) -> i32
+{
+    i32 r{sq(a) + sq(b)}
+    exit r
+}
+exit sqSum(3, 4)

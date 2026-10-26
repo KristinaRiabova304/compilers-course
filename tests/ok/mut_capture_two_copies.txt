@@ -1,0 +1,16 @@
+i32 n{0}
+fn counterA := [mut n]() -> i32
+{
+    n := n + 1
+    exit n
+}
+fn counterB := [mut n]() -> i32
+{
+    n := n + 1
+    exit n
+}
+i32 a{counterA()}
+i32 b{counterA()}
+i32 c{counterB()}
+i32 result{a * 100 + b * 10 + c}
+exit result

@@ -128,6 +128,14 @@ class CodeGen:
         if node.exit:
             node.exit.accept(self)
 
+    def visit_lambda(self, node):
+        """Nothing to generate here (Practice 8 Task 2): the struct and
+        its 'call' member function were already generated the same way
+        any other struct is (compiler.py walks every struct checker.py
+        knows about, not just the parsed ones), and the capturing decl
+        checker.py inserted right after this node in the statement list
+        does the rest, through the ordinary DeclNode path."""
+
     def visit_if(self, node):
         cond = node.condition.accept(self)
         function = self.builder.function
@@ -253,6 +261,11 @@ class CodeGen:
     def visit_call(self, node):
         if node.fn is None:  # the read() builtin - checker found no FnNode for it
             return self.gen_read()
+        if getattr(node, "obj", None) is not None:
+            # the call rule (Practice 8 Task 1): checker.py rewrote this
+            # into a callable object's own .call, same shape as an
+            # explicit member call - generate it exactly the same way
+            return self.gen_member_call(node.obj, node.fn, node.args)
         args = [self.self_ptr] if node.on_self else []
         for arg, param_decl in zip(node.args, node.fn.param_decls):
             value = arg.accept(self)
@@ -260,23 +273,26 @@ class CodeGen:
         return self.builder.call(self.fn_ir[node.fn], args, name="call")
 
     def visit_member_call(self, node):
-        if hasattr(node.obj, "decl"):
-            self_ptr = self.gep_chain(self.ptrs[node.obj.decl], node.obj.indices)
+        return self.gen_member_call(node.obj, node.fn, node.args)
+
+    def gen_member_call(self, obj, fn, args):
+        if hasattr(obj, "decl"):
+            self_ptr = self.gep_chain(self.ptrs[obj.decl], obj.indices)
         else:
             # the additional task: obj is a temporary (a call, a member
             # call or a chain field) - store it into a fresh alloca and
             # pass that address as this, the same as spelling it out by
             # hand would: "for a member function call the result is
             # stored into a temporary alloca, and its address is passed"
-            value = node.obj.accept(self)
+            value = obj.accept(self)
             with self.builder.goto_entry_block():
-                self_ptr = self.builder.alloca(self.ir_type(node.obj.type), name="tmp")
+                self_ptr = self.builder.alloca(self.ir_type(obj.type), name="tmp")
             self.builder.store(value, self_ptr)
-        args = [self_ptr]
-        for arg, param_decl in zip(node.args, node.fn.param_decls):
+        call_args = [self_ptr]
+        for arg, param_decl in zip(args, fn.param_decls):
             value = arg.accept(self)
-            args.append(self.coerce(value, arg.type, param_decl.type_name))
-        return self.builder.call(self.fn_ir[node.fn], args, name="call")
+            call_args.append(self.coerce(value, arg.type, param_decl.type_name))
+        return self.builder.call(self.fn_ir[fn], call_args, name="call")
 
     def visit_chain_field(self, node):
         value = node.base.accept(self)

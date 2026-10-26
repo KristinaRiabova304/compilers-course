@@ -96,6 +96,10 @@ def lex(data: bytes):
                 tokens.append(Token("paren", "start", "(", line, col))
             elif b == ord(")"):
                 tokens.append(Token("paren", "end", ")", line, col))
+            elif b == ord("["):
+                tokens.append(Token("bracket", "start", "[", line, col))
+            elif b == ord("]"):
+                tokens.append(Token("bracket", "end", "]", line, col))
             elif b in SINGLE_BYTE_OPS:
                 tokens.append(Token("operator", None, chr(b), line, col))
             elif b == ord(":"):

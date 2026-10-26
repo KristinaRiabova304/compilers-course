@@ -1,7 +1,7 @@
 from ast_nodes import (
     AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ChainFieldNode, ConstNode,
-    DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, MemberCallNode, MemberFnNode,
-    NotNode, PrintNode, ProgramNode, StringNode, StructNode, VarNode, WhileNode,
+    DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, LambdaNode, MemberCallNode,
+    MemberFnNode, NotNode, PrintNode, ProgramNode, StringNode, StructNode, VarNode, WhileNode,
 )
 from lexer import CompileError
 
@@ -74,6 +74,10 @@ class Parser:
                 continue
 
             if first.kind == "keyword" and first.sub == "fn":
+                if self.looks_like_lambda():
+                    phase = "statements"
+                    stmts.append(self.parse_lambda())
+                    continue
                 if phase == "statements":
                     raise self.error("a function must be declared before all statements", first)
                 phase = "fns"
@@ -176,8 +180,8 @@ class Parser:
 
     def parse_fn_rest(self):
         """Everything after the leading 'fn' token, shared by a top-level
-        fn and a struct's member fn: name, ':=', '(' params ')', '->'
-        result, block. Returns (name_tok, params, result_type, body)."""
+        fn and a struct's member fn: name, ':=', then the signature tail.
+        Returns (name_tok, params, result_type, body)."""
         name_tok = self.peek()
         if name_tok is None or name_tok.kind != "identifier":
             raise self.error("expected a function name", name_tok)
@@ -189,6 +193,14 @@ class Parser:
             raise self.error(f"expected ':=' after '{name_tok.text}', got '{got}'", op)
         self.eat()
 
+        params, result_type, body = self.parse_fn_signature_tail(name_tok.text)
+        return name_tok, params, result_type, body
+
+    def parse_fn_signature_tail(self, display_name):
+        """'(' [ type ident {...} ] ')' '->' type NL block - shared by a
+        top-level fn/member fn (after its own name/':=') and a lambda
+        (after its name/':='/capture list). Returns (params, result_type,
+        body)."""
         open_paren = self.peek()
         if open_paren is None or not (open_paren.kind == "paren" and open_paren.sub == "start"):
             raise self.error("expected '(' to start the parameter list", open_paren)
@@ -224,8 +236,82 @@ class Parser:
         result_type = result_tok.text
         self.end_of_line()
 
-        body = self.parse_block(f"fn {name_tok.text}")
-        return name_tok, params, result_type, body
+        body = self.parse_block(f"fn {display_name}")
+        return params, result_type, body
+
+    def looks_like_lambda(self):
+        """Peeks (without consuming) whether the current line reads
+        'fn' ident ':=' '[' - a lambda, as opposed to a plain 'fn' ident
+        ':=' '(' declaration. Used only by parse_program's top-level
+        dispatch, where both are syntactically possible; inside a block
+        'fn' can only ever start a lambda, so parse_statement commits to
+        parse_lambda() directly and lets it report a precise error if
+        '[' turns out to be missing."""
+        i = self.pos
+        if not (i < len(self.toks) and self.toks[i].kind == "keyword" and self.toks[i].sub == "fn"):
+            return False
+        i += 1
+        if not (i < len(self.toks) and self.toks[i].kind == "identifier"):
+            return False
+        i += 1
+        if not (i < len(self.toks) and self.toks[i].kind == "operator" and self.toks[i].text == ":="):
+            return False
+        i += 1
+        return i < len(self.toks) and self.toks[i].kind == "bracket" and self.toks[i].sub == "start"
+
+    def parse_lambda(self):
+        fn_tok = self.eat()  # 'fn'
+        name_tok = self.peek()
+        if name_tok is None or name_tok.kind != "identifier":
+            raise self.error("expected a lambda name", name_tok)
+        self.eat()
+
+        op = self.peek()
+        if op is None or not (op.kind == "operator" and op.text == ":="):
+            got = op.text if op is not None else "end of line"
+            raise self.error(f"expected ':=' after '{name_tok.text}', got '{got}'", op)
+        self.eat()
+
+        open_bracket = self.peek()
+        if open_bracket is None or not (open_bracket.kind == "bracket" and open_bracket.sub == "start"):
+            got = open_bracket.text if open_bracket is not None else "end of line"
+            raise self.error(f"expected '[' to start the capture list, got '{got}'", open_bracket)
+        self.eat()
+
+        captures = []
+        tok = self.peek()
+        if tok is not None and not (tok.kind == "bracket" and tok.sub == "end"):
+            captures.append(self.parse_capture())
+            while True:
+                tok = self.peek()
+                if tok is not None and tok.kind == "operator" and tok.text == ",":
+                    self.eat()
+                    captures.append(self.parse_capture())
+                else:
+                    break
+
+        close_bracket = self.peek()
+        if close_bracket is None or not (close_bracket.kind == "bracket" and close_bracket.sub == "end"):
+            got = close_bracket.text if close_bracket is not None else "end of line"
+            raise self.error(f"expected ']' to close the capture list, got '{got}'", close_bracket)
+        self.eat()
+
+        params, result_type, body = self.parse_fn_signature_tail(name_tok.text)
+        return LambdaNode(fn_tok.line, fn_tok.col, name_tok.text, captures,
+                           params, result_type, body)
+
+    def parse_capture(self):
+        mutable = False
+        tok = self.peek()
+        if tok is not None and tok.kind == "keyword" and tok.sub == "specifier":
+            mutable = True
+            self.eat()
+        name_tok = self.peek()
+        if name_tok is None or name_tok.kind != "identifier":
+            got = name_tok.text if name_tok is not None else "end of line"
+            raise self.error(f"expected a capture name, got '{got}'", name_tok)
+        self.eat()
+        return (mutable, name_tok.text, name_tok.line, name_tok.col)
 
     def parse_param(self):
         type_tok = self.peek()
@@ -267,6 +353,10 @@ class Parser:
             node = self.parse_print()
             self.end_of_line()
             return node
+        if first.kind == "keyword" and first.sub == "fn":
+            # inside a block 'fn' can only start a lambda - parse_lambda
+            # itself reports a precise error if '[' is missing
+            return self.parse_lambda()
         raise self.error(f"cannot start a statement with '{first.text}'", first)
 
     def parse_print(self):
