@@ -1,9 +1,10 @@
-# Languages and Compilers — Practice 7: member functions
+# Languages and Compilers — Practice 9: the first optimization pass
 
 A toy language with three built-in types (`i32`, `i64`, `bool`),
-user-defined `struct`s with fields and now member functions declared
-inside them, plus the `read()`/`print()` builtins, compiled to LLVM IR
-via `llvmlite.ir`.
+user-defined `struct`s with fields and member functions, callable
+objects and lambdas, the `read()`/`print()` builtins, and now an
+optional tree-level pass that drops variables nobody reads and
+functions nobody calls, compiled to LLVM IR via `llvmlite.ir`.
 
 - `lexer.py` — Practice 7 adds a `STRING` state: any byte except `"` and
   a newline, between two `"`, with no escape sequences; an unterminated
@@ -76,12 +77,38 @@ via `llvmlite.ir`.
   `Struct_method` (e.g. `Point_shift`, no `fn_` prefix — that one is
   only for top-level functions, to keep them out of `main`/`printf`'s
   way), its first parameter named `this`. Builds and shares the runtime
-  context every `CodeGen` instance reads from.
+  context every `CodeGen` instance reads from. Since Practice 8,
+  `checker.structs` (every struct, including one generated for a
+  lambda), not `program.structs` (only the ones written in the
+  program), is what every struct/member-function IR loop walks.
+  Since Practice 9, `main()` splits `sys.argv` into flags (anything
+  starting with `--`) and positional paths before looking at either,
+  so a flag may come first, last, or between the paths; `--remove-unused`
+  runs `optimizer.remove_unused` on the checked tree before code
+  generation (or before `--ast-checked` dumps it).
+- `optimizer.py` (Practice 9) — `remove_unused`, the first pass that
+  deletes part of the tree instead of just reading it: `UseCounter`
+  walks every function, member function and lambda body once and
+  counts, per declaration (`node` itself, never its name — two
+  declarations named `x` are two keys) how many times it is read, and
+  per top-level function how many times it is called; a declaration or
+  an assignment whose value contains a call is always counted as used,
+  since the call may print. `Pruner` rebuilds every block's statement
+  list without the declarations and assignments found at zero reads,
+  and the top-level function list without the functions found at zero
+  calls — never a parameter, a struct field, or a lambda's own
+  generated declaration, none of which the pass is allowed to touch.
+  `remove_unused` reruns both until a round removes nothing: dropping
+  one declarations can zero out another's only read, and dropping one
+  function can zero out another's only call.
 - `tests/ok/`, `tests/err/` — programs that must compile and run, and
   programs that must fail to compile, each with its expected
   stdout/stderr next to it. A program that calls `read()` keeps its
   input in a `NAME.in` file next to `NAME.txt`; `tests/run_tests.py`
   feeds it to `lli` as standard input when present.
+- `tests/opt/` (Practice 9) — programs whose output must be exactly the
+  same compiled with `--remove-unused` and without it; `NAME.astc` next
+  to `NAME.txt` is the expected `--remove-unused --ast-checked` tree.
 
 ## Language
 
@@ -165,16 +192,113 @@ calls, which are unchanged):
   call's result, a string literal anywhere but `print`'s argument, a
   member function called on anything but an object of the right type.
 
+### Callable objects and lambdas (Practice 8)
+
+```
+struct Scale
+{
+    i32 k
+    fn call := (i32 v) -> i32
+    {
+        i32 r{v * k}
+        exit r
+    }
+}
+Scale triple{3}
+i32 k{10}
+fn add_k := [k](i32 y) -> i32
+{
+    i32 r{k + y}
+    exit r
+}
+print(triple(14))   # sugar for triple.call(14): 42
+exit add_k(1)         # 11
+```
+
+- A name followed by `(` is a call on a function **or** sugar for
+  `obj.call(...)` when the name is a visible variable (a parameter, a
+  local, a field inside a member function) whose type is a struct
+  declaring `call` — the parser cannot tell the two apart, so the
+  checker decides and rewrites the call; a name that is both a
+  variable and a function is an error at the call, not a choice.
+- `fn name := [captures](params) -> R { ... }` is a lambda: a function
+  declared where a statement stands, together with a copy of every
+  variable it captures. A capture is `const` unless written `[mut x]`
+  (then it is the lambda's own mutable copy — the original variable is
+  never touched); the body sees only its parameters, its locals, its
+  captures and the program's global functions, never the enclosing
+  scope. The checker rewrites a lambda into a struct (one field per
+  capture), that struct's own `call`, and a `const`/`mut` declaration
+  of it (`mut` exactly when one capture is) — after that it is a
+  callable object like any other. The generated type has no name a
+  program could ever write (`lambda.add_k`), so it can never be an
+  argument, an `exit` value, a field, or printed.
+
+## Optimizations (Practice 9)
+
+`--remove-unused` runs one more pass on the checked tree, before code
+generation: `UseCounter` counts, per declaration, how many times it is
+read, and per top-level function, how many times it is called;
+`Pruner` drops every declaration (and its assignments) at zero reads,
+and every function at zero calls, keyed by the node itself so two
+declarations named the same stay distinct. It reruns until a round
+removes nothing, since dropping one can zero out another's only use.
+It never touches a parameter, a struct field, or a lambda's own
+generated declaration. `tests/run_tests.py --remove-unused` (or
+`REMOVE_UNUSED=1`) reruns every `tests/ok`/`tests/err` program with the
+flag added, to check the pass changes nothing an earlier practice
+already tests.
+
+**A limit of counting, not a bug:** a variable that only feeds itself
+(`k := k + 1`, nobody else reading `k`) survives — the right side of
+its own assignment is a read, so it never reaches zero. A smarter pass
+could notice the assignment is the *only* read and still drop both,
+but counting alone cannot tell "read by its own update" from "read by
+something that matters" — this pass does not try.
+
+**Who frees a removed subtree:** the compiler is Python (CPython),
+reference-counted — an AST node with no remaining reference is freed
+the instant the last one goes, no tracing collector involved unless a
+reference cycle keeps it alive artificially. None of this project's
+AST nodes keep a pointer back to their parent (no node class has a
+`.parent`/`.owner` field), so a removed subtree never forms a cycle
+with the tree that used to hold it, and never needs the cyclic
+collector (`gc`) to be freed — plain refcounting is enough. Measured
+directly: take a `weakref.ref()` of a `DeclNode` about to be pruned,
+drop every other reference to it, run `remove_unused`, and check the
+weakref *before* calling `gc.collect()` —
+
+```python
+>>> ref = weakref.ref(x_decl); del x_decl
+>>> remove_unused(program)
+>>> ref() is None          # True, with no gc.collect() at all
+True
+>>> gc.collect()           # finds nothing left to collect either
+0
+```
+
+— confirming the node was already gone by plain refcounting, not by a
+later sweep. (This is the compiler's own memory, not the compiled
+program's: the toy language has no heap yet, so none of this applies
+to anything a compiled program itself allocates.)
+
 ## Running the compiler
 
 ```bash
-python3 compiler.py input.txt output.ll   # compile
-python3 compiler.py --ast input.txt        # print the tree, write nothing
+python3 compiler.py input.txt output.ll                   # compile
+python3 compiler.py --remove-unused input.txt output.ll    # ... with the optimizer
+python3 compiler.py --ast input.txt                        # parse tree, write nothing
+python3 compiler.py --ast-checked input.txt                 # tree after the checker
+python3 compiler.py --remove-unused --ast-checked input.txt # ... and after the optimizer
 lli output.ll                                # fastest way to check a change
 llc -filetype=obj -relocation-model=pic output.ll -o output.o
 clang -fPIE output.o -o program && ./program
 opt -passes=mem2reg -S output.ll              # same IR, allocas promoted to registers/phi
 ```
+
+Flags may appear anywhere on the command line, before or after the
+paths; `--remove-unused` without `--ast`/`--ast-checked`/`--tokens`
+just runs the optimizer before code generation, same output otherwise.
 
 Print the token list for a source file (used to eyeball the lexer):
 
@@ -193,6 +317,8 @@ compilation error: line 7:6: 'Point' has no field 'z'
 
 ```bash
 python3 tests/run_tests.py
+python3 tests/run_tests.py --remove-unused   # same tests, with the optimizer on
+REMOVE_UNUSED=1 python3 tests/run_tests.py    # ... or via the environment
 ```
 
 Compiles every `tests/ok/*.txt`, runs it through `lli` (feeding it
@@ -200,7 +326,13 @@ Compiles every `tests/ok/*.txt`, runs it through `lli` (feeding it
 against the matching `.expected` file; compiles every `tests/err/*.txt`
 and diffs stderr against its `.expected` file. Requires `lli` on `PATH`
 (part of LLVM, e.g. `brew install llvm`). Some `tests/ok/*` also have a
-`.ast` file with the expected `--ast` dump next to them.
+`.ast` file with the expected `--ast` dump next to them. `tests/opt/*.txt`
+(Practice 9) are compiled both with and without `--remove-unused` and
+must print the same `.expected` output either way; a `.astc` file next
+to one is the expected `--remove-unused --ast-checked` tree. The
+`--remove-unused`/`REMOVE_UNUSED` switch above reruns every `ok`/`err`
+program with the flag added to catch the optimizer changing a result
+an earlier practice already pinned down.
 
 ## Setup
 

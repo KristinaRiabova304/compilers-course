@@ -1,0 +1,21 @@
+fn countTo := (i32 n) -> i32
+{
+    i32 mut i{0}
+    while i != n
+    {
+        i := i + 1
+    }
+    exit i
+}
+fn factorial := (i32 n) -> i32
+{
+    if n == 0
+    {
+        exit 1
+    }
+    i32 r{n * factorial(n - 1)}
+    exit r
+}
+i32 unused_a{countTo(3)}
+i32 unused_b{factorial(4)}
+exit 0

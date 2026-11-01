@@ -1,0 +1,12 @@
+Program
+  Fn noisy() -> i32
+    Block
+      Print
+        String "hi"
+      Exit
+        Const 1
+  Decl unused i32 const
+    Init
+      Call noisy
+  Exit
+    Const 0

@@ -1,0 +1,14 @@
+Program
+  Decl a i32 const
+    Init
+      Const 1
+  Decl b i32 const
+    Init
+      Const 2
+  Decl sum i32 const
+    Init
+      BinOp +
+        Var a
+        Var b
+  Exit
+    Var sum

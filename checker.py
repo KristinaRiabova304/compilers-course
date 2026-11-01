@@ -318,6 +318,7 @@ class SemanticChecker:
         decl_node = DeclNode(node.line, node.col, struct_name, node.name, is_mut,
                               InitNode(node.line, node.col, init_items))
         decl_node.accept(self)
+        decl_node.from_lambda = True  # Practice 9: never a candidate for removal
         node.decl = decl_node
         return decl_node
 

@@ -1,0 +1,7 @@
+i32 mut r{0}
+if true
+{
+    i32 unused{5}
+    r := 10
+}
+exit r

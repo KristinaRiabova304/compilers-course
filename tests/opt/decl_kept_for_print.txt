@@ -1,0 +1,7 @@
+fn noisy := () -> i32
+{
+    print("hi")
+    exit 1
+}
+i32 unused{noisy()}
+exit 0

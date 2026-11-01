@@ -1,0 +1,32 @@
+Program
+  Lambda noisy -> i32
+    Struct lambda.noisy
+      MemberFn call -> i32
+        Param a i32
+        Block
+          Print
+            Var a
+          Exit
+            Var a
+  Decl noisy lambda.noisy const
+    Init
+  Lambda quiet -> i32
+    Struct lambda.quiet
+      MemberFn call -> i32
+        Param a i32
+        Block
+          Decl r i32 const
+            Init
+              BinOp *
+                Var a
+                Const 2
+          Exit
+            Var r
+  Decl quiet lambda.quiet const
+    Init
+  Decl keep_noisy i32 const
+    Init
+      CallableCall noisy
+        Const 9
+  Exit
+    Const 0

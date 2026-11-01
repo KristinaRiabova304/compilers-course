@@ -1,0 +1,11 @@
+fn loud := (i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+fn relay := (i32 a) -> i32
+{
+    exit loud(a)
+}
+i32 unused{relay(7)}
+exit 0

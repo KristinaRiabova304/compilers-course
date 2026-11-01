@@ -8,6 +8,7 @@ import llvmlite.binding as llvm
 from checker import SemanticChecker
 from gen import CodeGen
 from lexer import CompileError, lex, split_statements
+from optimizer import remove_unused
 from parser import Parser
 
 
@@ -17,9 +18,13 @@ def parse(data: bytes):
     return Parser(lines).parse_program()
 
 
-def compile_program(program):
+def compile_program(program, optimize=False):
     checker = SemanticChecker()
     checker.check(program)
+    if optimize:
+        # runs only once the checker has accepted the program: the pass
+        # never has to deal with an unresolved name or an invalid tree
+        remove_unused(program)
 
     module = ir.Module(name="practice7")
     module.triple = llvm.get_default_triple()
@@ -122,8 +127,19 @@ def compile_program(program):
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "--tokens":
-        with open(sys.argv[2], "rb") as f:
+    # flags may come first, last, or between the paths - never a fixed
+    # position, so split them from the positional arguments by shape
+    # (every flag starts with "--") rather than by index
+    args = sys.argv[1:]
+    flags = {a for a in args if a.startswith("--")}
+    positional = [a for a in args if not a.startswith("--")]
+    optimize = "--remove-unused" in flags
+
+    if "--tokens" in flags:
+        if len(positional) != 1:
+            sys.stderr.write("usage: compiler.py --tokens input.txt\n")
+            sys.exit(1)
+        with open(positional[0], "rb") as f:
             data = f.read()
         try:
             for tok in lex(data):
@@ -133,34 +149,42 @@ def main():
             sys.exit(1)
         return
 
-    if len(sys.argv) == 3 and sys.argv[1] == "--ast":
-        with open(sys.argv[2], "rb") as f:
-            data = f.read()
-        try:
-            program = parse(data)
-        except CompileError as e:
-            sys.stderr.write(f"compilation error: {e}\n")
+    if "--ast-checked" in flags:
+        if len(positional) != 1:
+            sys.stderr.write("usage: compiler.py --ast-checked input.txt\n")
             sys.exit(1)
-        program.dump()
-        return
-
-    if len(sys.argv) == 3 and sys.argv[1] == "--ast-checked":
-        with open(sys.argv[2], "rb") as f:
+        with open(positional[0], "rb") as f:
             data = f.read()
         try:
             program = parse(data)
             SemanticChecker().check(program)
+            if optimize:
+                remove_unused(program)
         except CompileError as e:
             sys.stderr.write(f"compilation error: {e}\n")
             sys.exit(1)
         program.dump()
         return
 
-    if len(sys.argv) != 3:
-        sys.stderr.write("usage: compiler.py input.txt output.ll\n")
+    if "--ast" in flags:
+        if len(positional) != 1:
+            sys.stderr.write("usage: compiler.py --ast input.txt\n")
+            sys.exit(1)
+        with open(positional[0], "rb") as f:
+            data = f.read()
+        try:
+            program = parse(data)
+        except CompileError as e:
+            sys.stderr.write(f"compilation error: {e}\n")
+            sys.exit(1)
+        program.dump()
+        return
+
+    if len(positional) != 2:
+        sys.stderr.write("usage: compiler.py [--remove-unused] input.txt output.ll\n")
         sys.exit(1)
 
-    input_path, output_path = sys.argv[1], sys.argv[2]
+    input_path, output_path = positional
     try:
         with open(input_path, "rb") as f:
             data = f.read()
@@ -170,7 +194,7 @@ def main():
 
     try:
         program = parse(data)
-        module = compile_program(program)
+        module = compile_program(program, optimize=optimize)
     except CompileError as e:
         sys.stderr.write(f"compilation error: {e}\n")
         sys.exit(1)

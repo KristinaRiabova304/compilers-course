@@ -1,0 +1,13 @@
+Program
+  Fn twice(i32 a) -> i32
+    Block
+      Decl r i32 const
+        Init
+          BinOp +
+            Var a
+            Var a
+      Exit
+        Var r
+  Exit
+    Call twice
+      Const 2
