@@ -1,0 +1,7 @@
+i32 k{10}
+fn add_k := [k](i32 y) -> i32
+{
+    exit k
+}
+print(add_k)
+exit 0

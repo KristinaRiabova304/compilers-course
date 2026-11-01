@@ -1,0 +1,7 @@
+i32 x{7}
+if true
+{
+    bool x{true}
+    exit x
+}
+exit 0

@@ -1,0 +1,11 @@
+i32 k{3}
+fn get_k := [k]() -> i32
+{
+    exit k
+}
+fn wrap := [get_k]() -> i32
+{
+    i32 r{get_k()}
+    exit r
+}
+exit wrap()

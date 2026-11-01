@@ -1,0 +1,1 @@
+compilation error: line 11:1: cannot assign to 'o.inner': not every field of 'Inner' is mut, at every depth

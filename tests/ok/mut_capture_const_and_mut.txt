@@ -1,0 +1,11 @@
+i32 a{5}
+i32 mut b{10}
+fn f := [a, mut b]() -> i32
+{
+    b := b + a
+    exit b
+}
+i32 r1{f()}
+i32 r2{f()}
+i32 result{r1 + r2}
+exit result

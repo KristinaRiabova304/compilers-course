@@ -1,0 +1,13 @@
+fn noisy := [](i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+fn quiet := [](i32 a) -> i32
+{
+    i32 r{a * 2}
+    exit r
+}
+i32 keep_noisy{noisy(9)}
+i32 drop_quiet{quiet(9)}
+exit 0

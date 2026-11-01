@@ -1,0 +1,20 @@
+fn outerA := (i32 x) -> i32
+{
+    fn f := [x]() -> i32
+    {
+        exit x
+    }
+    exit f()
+}
+fn outerB := (i32 y) -> i32
+{
+    fn f := [y]() -> i32
+    {
+        exit y
+    }
+    exit f()
+}
+i32 a{outerA(10)}
+i32 b{outerB(20)}
+i32 result{a + b}
+exit result

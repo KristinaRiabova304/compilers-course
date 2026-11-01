@@ -1,0 +1,14 @@
+i32 n{0}
+fn counter := [mut n]() -> i32
+{
+    n := n + 1
+    exit n
+}
+i32 mut i{0}
+i32 mut sum{0}
+while i != 4
+{
+    sum := sum + counter()
+    i := i + 1
+}
+exit sum

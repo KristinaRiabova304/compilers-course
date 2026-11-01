@@ -1,0 +1,46 @@
+Program
+  Fn countTo(i32 n) -> i32
+    Block
+      Decl i i32 mut
+        Init
+          Const 0
+      While
+        BinOp !=
+          Var i
+          Var n
+        Block
+          Assign i
+            BinOp +
+              Var i
+              Const 1
+      Exit
+        Var i
+  Fn factorial(i32 n) -> i32
+    Block
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Exit
+            Const 1
+      Decl r i32 const
+        Init
+          BinOp *
+            Var n
+            Call factorial
+              BinOp -
+                Var n
+                Const 1
+      Exit
+        Var r
+  Decl unused_a i32 const
+    Init
+      Call countTo
+        Const 3
+  Decl unused_b i32 const
+    Init
+      Call factorial
+        Const 4
+  Exit
+    Const 0

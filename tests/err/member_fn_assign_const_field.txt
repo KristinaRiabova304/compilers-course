@@ -1,0 +1,12 @@
+struct Point
+{
+    i32 x
+    i32 mut y
+    fn reset := () -> i32
+    {
+        x := 0
+        exit x
+    }
+}
+Point p{1, 2}
+exit p.reset()
